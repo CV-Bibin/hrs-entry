@@ -20,7 +20,7 @@ const formatDecimalToHMS = (dec) => {
   return `(${Math.floor(sTot / 3600)}h ${Math.floor((sTot % 3600) / 60)}m ${sTot % 60}s)`;
 };
 
-export default function TimeLedger({ user, setCurrentView }) {
+export default function TimeLedger({ user, myVersion, setCurrentView }) { 
   const today = new Date();
   const todayString = getLocalDateString(today);
   const thirtyDaysAgo = new Date(); thirtyDaysAgo.setDate(today.getDate() - 30);
@@ -40,6 +40,11 @@ export default function TimeLedger({ user, setCurrentView }) {
 
   const [isPrevMonthLocked, setIsPrevMonthLocked] = useState(true);
 
+  // 🚀 STATE FOR ROLES, STATUS, AND PAY
+  const [myRole, setMyRole] = useState('rater');
+  const [myStatus, setMyStatus] = useState('active'); 
+  const [myHourlyRate, setMyHourlyRate] = useState(160); 
+
   const currentMonthId = `${selectedDate.split("-")[1]}-${selectedDate.split("-")[0]}`;
   const targetMonthPrefix = `${selectedDate.split("-")[0]}-${selectedDate.split("-")[1]}`;
   const todayYYYY_MM = todayString.substring(0, 7);
@@ -50,21 +55,37 @@ export default function TimeLedger({ user, setCurrentView }) {
   const prevMonthYYYY_MM = `${prevMonthDate.getFullYear()}-${String(prevMonthDate.getMonth() + 1).padStart(2, '0')}`;
 
   // ==========================================
+  // 🛡️ FETCH USER ROLE & STATUS
+  // ==========================================
+  useEffect(() => {
+    if (!user?.email) return;
+    const q = query(collection(db, "users"), where("email", "==", user.email));
+    const unsub = onSnapshot(q, (snap) => {
+      if (!snap.empty) {
+        const userData = snap.docs[0].data();
+        setMyRole(userData.role || 'rater');
+        setMyStatus(userData.status || 'active'); 
+        setMyHourlyRate(userData.hourlyRate || 160); 
+      } else {
+        setMyRole('rater');
+        setMyStatus('active');
+      }
+    });
+    return () => unsub();
+  }, [user?.email]);
+
+  // ==========================================
   // 🛡️ NEW ACCOUNT BYPASS LOGIC
   // ==========================================
-  // Safely grab the exact moment the user's account was created in Firebase
   const creationDate = user?.metadata?.creationTime ? new Date(user.metadata.creationTime) : new Date();
   const creationYYYY_MM = `${creationDate.getFullYear()}-${String(creationDate.getMonth() + 1).padStart(2, '0')}`;
   
-  // If the previous month is chronologically BEFORE their creation month, they are excused!
   const requiresPrevMonthLock = prevMonthYYYY_MM >= creationYYYY_MM;
-
   const isViewedMonthOver = targetMonthPrefix < todayYYYY_MM;
   const isViewingCurrentMonth = targetMonthPrefix === todayYYYY_MM;
   
-  // FIX: Added requiresPrevMonthLock so brand new users don't get blocked
   const isEntryBlocked = isViewingCurrentMonth && !isPrevMonthLocked && requiresPrevMonthLock;
-  const isFormDisabled = isMonthLocked || isEntryBlocked; 
+  const isFormDisabled = isMonthLocked || isEntryBlocked || myStatus === 'suspended'; // Also disable if suspended
 
   const showAlert = (type, title, message, onConfirm = null, confirmText = 'Confirm') => setAlertConfig({ isOpen: true, type, title, message, onConfirm, confirmText });
   const closeAlert = () => setAlertConfig(prev => ({ ...prev, isOpen: false }));
@@ -81,17 +102,30 @@ export default function TimeLedger({ user, setCurrentView }) {
     });
   }, [user, prevMonthId]);
 
+  // ==========================================
+  // 📊 FETCH TIME ENTRIES (FILTERED BY VERSION)
+  // ==========================================
   useEffect(() => {
     if (!user) return;
     setAllEntries([]);
     setMonthlyEntries([]); 
     const q = query(collection(db, "time_entries"), where("uid", "==", user.uid));
+    
     return onSnapshot(q, (snap) => {
       const fetched = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-      setAllEntries(fetched);
-      setMonthlyEntries(fetched.filter(e => e.assigned_date.startsWith(targetMonthPrefix)).sort((a, b) => b.timestamp_entered - a.timestamp_entered));
+      
+      // Filter out any entries that don't match the currently active version!
+      const versionFiltered = fetched.filter(entry => (entry.version || 1) === (myVersion || 1));
+      
+      setAllEntries(versionFiltered);
+      
+      setMonthlyEntries(
+        versionFiltered
+          .filter(e => e.assigned_date.startsWith(targetMonthPrefix))
+          .sort((a, b) => b.timestamp_entered - a.timestamp_entered)
+      );
     });
-  }, [user, targetMonthPrefix]);
+  }, [user, targetMonthPrefix, myVersion]); 
 
   const calcHrs = (parseFloat(inputHours) || 0) + (parseFloat(inputMinutes) || 0) / 60 + (parseFloat(inputSeconds) || 0) / 3600;
 
@@ -99,16 +133,31 @@ export default function TimeLedger({ user, setCurrentView }) {
     e.preventDefault();
     if (isFormDisabled || (calcHrs <= 0 && !editingId)) return;
     if (selectedDate < minDateString) return showAlert('error', 'Date Locked', 'Older than 30 days.');
+    
+    // 🚀 NEW: Block future dates on submission!
+    if (selectedDate > todayString) return showAlert('error', 'Invalid Date', 'You cannot log hours for future dates.');
 
     const hoursToSave = Number(calcHrs.toFixed(3));
     const raw = `${inputHours || 0}h ${inputMinutes || 0}m ${inputSeconds || 0}s`;
     
     setInputHours(''); setInputMinutes(''); setInputSeconds('');
-    const currentId = editingId; setEditingId(null);
+    const currentId = editingId; setEditingId(null)
 
     try {
-      if (currentId) await updateDoc(doc(db, "time_entries", currentId), { time_value_hours: hoursToSave, raw_input: raw, last_edited: Date.now() });
-      else await addDoc(collection(db, 'time_entries'), { uid: user.uid, email: user.email, assigned_date: selectedDate, time_value_hours: hoursToSave, timestamp_entered: Date.now(), raw_input: raw, groupId: "Unassigned" });
+      if (currentId) {
+         await updateDoc(doc(db, "time_entries", currentId), { time_value_hours: hoursToSave, raw_input: raw, last_edited: Date.now() });
+      } else {
+         await addDoc(collection(db, 'time_entries'), { 
+            uid: user.uid, 
+            email: user.email, 
+            assigned_date: selectedDate, 
+            time_value_hours: hoursToSave, 
+            timestamp_entered: Date.now(), 
+            raw_input: raw, 
+            groupId: "Unassigned",
+            version: myVersion || 1 // 👈 Save the active version
+         });
+      }
     } catch (err) { showAlert('error', 'Error', 'Failed to save.'); }
   };
 
@@ -138,6 +187,14 @@ export default function TimeLedger({ user, setCurrentView }) {
     <div style={{ width: "100%", boxSizing: "border-box", padding: "0", fontFamily: "sans-serif" }}>
       
       <CustomAlert config={alertConfig} closeAlert={closeAlert} />
+      
+      {/* 🚨 NEW SUSPENSION WARNING 🚨 */}
+      {myStatus === 'suspended' && (
+        <div style={{ backgroundColor: '#ffebe9', color: '#cf222e', padding: '20px', borderRadius: '8px', margin: '0 auto 20px auto', textAlign: 'center', border: '2px solid #ff8182' }}>
+          <h3 style={{ margin: "0 0 10px 0" }}>🚫 Account Suspended</h3>
+          <p style={{ margin: 0, fontWeight: "bold" }}>Your account has been temporarily disabled by an Administrator. You cannot log or edit time entries.</p>
+        </div>
+      )}
 
       {isMonthLocked && <div style={{ backgroundColor: '#d1ecf1', color: '#0c5460', padding: '15px', borderRadius: '8px', margin: '0 auto 20px auto', textAlign: 'center', fontWeight: 'bold' }}>🔒 Month marked as COMPLETED. Records are locked.</div>}
 
@@ -213,6 +270,8 @@ export default function TimeLedger({ user, setCurrentView }) {
         <div style={{ flex: 3, minWidth: 0 }}>
           <CalendarBoard 
             user={user} 
+            myRole={myRole} 
+            myHourlyRate={myHourlyRate}
             selectedDate={selectedDate} setSelectedDate={setSelectedDate} setEditingId={setEditingId}
             monthlyEntries={monthlyEntries} monthlyTotal={monthlyTotal} targetMonthPrefix={targetMonthPrefix}
             todayString={todayString} minDateString={minDateString} 

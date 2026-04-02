@@ -2,6 +2,8 @@ import React from 'react';
 
 export default function CalendarBoard({
   user,
+  myRole, 
+  myHourlyRate,
   selectedDate, setSelectedDate, setEditingId,
   monthlyEntries, monthlyTotal, targetMonthPrefix,
   todayString, minDateString, 
@@ -19,7 +21,7 @@ export default function CalendarBoard({
   // ==========================================
   const handlePrevMonth = () => {
     const [y, m] = selectedDate.split("-");
-    const prevDate = new Date(y, m - 1 - 1, 1); // Subtract 1 month, default to 1st day
+    const prevDate = new Date(y, m - 1 - 1, 1);
     const newDateStr = `${prevDate.getFullYear()}-${String(prevDate.getMonth() + 1).padStart(2, "0")}-01`;
     setSelectedDate(newDateStr);
     setEditingId(null);
@@ -27,19 +29,18 @@ export default function CalendarBoard({
 
   const handleNextMonth = () => {
     const [y, m] = selectedDate.split("-");
-    const nextDate = new Date(y, m - 1 + 1, 1); // Add 1 month, default to 1st day
+    const nextDate = new Date(y, m - 1 + 1, 1);
     const newDateStr = `${nextDate.getFullYear()}-${String(nextDate.getMonth() + 1).padStart(2, "0")}-01`;
     setSelectedDate(newDateStr);
     setEditingId(null);
   };
 
-  // Prevent navigating into the future
   const isViewingCurrentMonth = targetMonthPrefix >= todayString.substring(0, 7);
 
   // ==========================================
   // 💰 PAY RATE CALCULATION
   // ==========================================
-  const HOURLY_RATE = 160; 
+  const HOURLY_RATE = myHourlyRate || 160; 
   const estimatedEarnings = monthlyTotal * HOURLY_RATE;
 
   const formatCurrency = (amount) => {
@@ -130,18 +131,26 @@ export default function CalendarBoard({
     
     const isSelected = dateStr === selectedDate;
     const isToday = dateStr === todayString;
+    
+    // 🚀 NEW: Check if the date is in the future
+    const isFuture = dateStr > todayString;
     const isLocked = dateStr < minDateString;
+    
+    // Disable clicking if it's locked OR in the future
+    const isDisabled = isLocked || isFuture;
 
     return (
       <div 
         key={dayNum} 
-        onClick={() => { setSelectedDate(dateStr); setEditingId(null); }}
+        onClick={isDisabled ? undefined : () => { setSelectedDate(dateStr); setEditingId(null); }}
         style={{ 
-          border: '1px solid #eee', borderRadius: '6px', padding: '8px 4px', textAlign: 'center', cursor: 'pointer',
+          border: '1px solid #eee', borderRadius: '6px', padding: '8px 4px', textAlign: 'center', 
+          cursor: isDisabled ? 'not-allowed' : 'pointer', // Show blocked cursor
           backgroundColor: isSelected ? '#007BFF' : (isToday ? '#e8f5e9' : '#fff'),
-          color: isSelected ? '#fff' : '#333',
+          color: isSelected ? '#fff' : (isFuture ? '#ccc' : '#333'), // Fade text if future
           boxShadow: isSelected ? '0 4px 10px rgba(0,123,255,0.4)' : 'none',
-          opacity: isLocked ? 0.5 : 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center',
+          opacity: isDisabled ? 0.5 : 1, // Fade out the entire box
+          display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center',
           minHeight: '65px', transition: 'all 0.2s ease-in-out'
         }}
       >
@@ -211,8 +220,18 @@ export default function CalendarBoard({
         >
           📊 View in Excel
         </button>
+
+        {myRole !== 'rater' && (
+          <button 
+            onClick={() => setCurrentView('ratersPerformance')}
+            style={{ flex: 1, padding: "10px", backgroundColor: "#3b82f6", color: "white", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "13px", fontWeight: "bold", display: "flex", justifyContent: "center", alignItems: "center", gap: "6px" }}
+          >
+            👥 Team Performance
+          </button>
+        )}
+
         <button 
-          onClick={() => setCurrentView('progress')}
+          onClick={() => setCurrentView('workProgress')}
           style={{ flex: 1, padding: "10px", backgroundColor: "#17a2b8", color: "white", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "13px", fontWeight: "bold", display: "flex", justifyContent: "center", alignItems: "center", gap: "6px" }}
         >
           📈 View Work Progress

@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { db } from "../firebase";
 import { collection, onSnapshot } from "firebase/firestore";
+import UserCalendarModal from './UserCalendarModal.jsx';
 
 // --- STABLE UTILITIES ---
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -27,12 +28,10 @@ const getWeeksWithDates = (monthString) => {
     const [yStr, mStr] = monthString.split('-');
     const y = parseInt(yStr, 10);
     const m = parseInt(mStr, 10);
-
     if (isNaN(y) || isNaN(m) || m < 1 || m > 12) return [];
 
     const firstDay = new Date(y, m - 1, 1);
     const lastDay = new Date(y, m, 0);
-    
     if (isNaN(firstDay.getTime()) || isNaN(lastDay.getTime())) return [];
 
     const weeks = [];
@@ -42,10 +41,7 @@ const getWeeksWithDates = (monthString) => {
     while (currentStart <= lastDay && safeLoopGuard < 6) {
       safeLoopGuard++;
       let currentEnd = new Date(currentStart);
-      
-      const dayOfWeek = currentEnd.getDay();
-      const daysToSat = 6 - (isNaN(dayOfWeek) ? 0 : dayOfWeek); 
-      
+      const daysToSat = 6 - (isNaN(currentEnd.getDay()) ? 0 : currentEnd.getDay()); 
       currentEnd.setDate(currentEnd.getDate() + daysToSat);
       if (currentEnd > lastDay) currentEnd = new Date(lastDay);
 
@@ -91,6 +87,10 @@ export default function RatersPerformance({ user }) {
   const today = new Date();
   const currentMonthStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`;
   const [selectedMonth, setSelectedMonth] = useState(currentMonthStr);
+  const [searchTerm, setSearchTerm] = useState("");
+  
+  // Modal State
+  const [calendarUser, setCalendarUser] = useState(null);
 
   useEffect(() => {
     const unsubUsers = onSnapshot(collection(db, "users"), (snap) => {
@@ -112,24 +112,24 @@ export default function RatersPerformance({ user }) {
   const isAdmin = myProfile.role === 'admin' || myProfile.role === 'co-admin';
   const myLeaderName = myProfile.leaderName;
   
-  let myTeam = [];
+  let myRawTeam = [];
   let isMasterView = false;
 
   if (isAdmin) {
     if (myLeaderName) {
-      myTeam = usersList.filter(u => (u.role === 'rater' && u.assignedLeader === myLeaderName) || u.email === user.email);
+      myRawTeam = usersList.filter(u => (u.role === 'rater' && u.assignedLeader === myLeaderName) || u.email === user.email);
     } else {
-      myTeam = usersList.filter(u => u.role === 'rater' || u.email === user.email);
+      myRawTeam = usersList.filter(u => u.role === 'rater' || u.email === user.email);
       isMasterView = true;
     }
   } else if (myProfile.role === 'leader') {
-    if (!myLeaderName) return <div style={{ margin: "100px auto", textAlign: "center", color: "#be123c", backgroundColor: "#fff1f2", padding: "40px", borderRadius: "12px", border: "1px solid #fecdd3", maxWidth: "500px" }}><h2 style={{margin: 0}}>Profile Incomplete</h2><p>Admin has not assigned you a Leader Name.</p></div>;
-    myTeam = usersList.filter(u => (u.role === 'rater' && u.assignedLeader === myLeaderName) || u.email === user.email);
+    if (!myLeaderName) return <div style={{ margin: "100px auto", textAlign: "center", color: "#be123c", backgroundColor: "#fff1f2", padding: "40px", borderRadius: "12px", border: "1px solid #fecdd3", maxWidth: "500px" }}><h2 style={{margin: 0}}>Profile Incomplete</h2></div>;
+    myRawTeam = usersList.filter(u => (u.role === 'rater' && u.assignedLeader === myLeaderName) || u.email === user.email);
   } else {
     return <div style={{ padding: "100px", textAlign: "center", color: "#ef4444", fontWeight: "bold" }}>Unauthorized Access.</div>;
   }
 
-  // SAFE DATES & GROUPS
+  // --- PRE-PROCESS & CLEAN DATA ---
   const activeMonth = selectedMonth || currentMonthStr;
   const monthWeeks = getWeeksWithDates(activeMonth);
   const numWeeks = Math.max(1, monthWeeks.length);
@@ -138,22 +138,126 @@ export default function RatersPerformance({ user }) {
   let displayMonthName = activeMonth;
   const [yStr, mStr] = activeMonth.split('-');
   const mIndex = parseInt(mStr, 10) - 1;
-  if (!isNaN(mIndex) && mIndex >= 0 && mIndex < 12) {
-    displayMonthName = `${MONTHS[mIndex]} ${yStr}`;
-  }
+  if (!isNaN(mIndex) && mIndex >= 0 && mIndex < 12) displayMonthName = `${MONTHS[mIndex]} ${yStr}`;
 
+  // 1. Calculate stats and apply strict filters
+  const processedTeam = myRawTeam.reduce((accArr, acc) => {
+    const logs = timeData.filter(l => l.email === acc.email && typeof l.assigned_date === 'string' && l.assigned_date.startsWith(activeMonth));
+    const wHrs = new Array(numWeeks).fill(0);
+    let mTotal = 0;
+
+    logs.forEach(l => {
+      const h = Number(l.time_value_hours) || 0;
+      if (!isNaN(h)) {
+        mTotal += h;
+        const wIdx = getWeekIndex(l.assigned_date);
+        if (wIdx >= 0 && wIdx < numWeeks) wHrs[wIdx] += h;
+      }
+    });
+
+    const isSuspended = acc.status === 'suspended';
+
+    // Hide Disabled Accounts with 0 hours this month
+    if (isSuspended && mTotal === 0) return accArr;
+
+    const tBase = Number(acc.bonusThreshold) || 40;
+    const isBonusMet = acc.hasBonus && mTotal >= tBase;
+    const cLRate = isBonusMet ? (Number(acc.leaderMaxINR) || Number(acc.leaderBaseINR) || 0) : (Number(acc.leaderBaseINR) || 0);
+    const cRRate = isBonusMet ? (Number(acc.raterMaxINR) || Number(acc.raterBaseINR) || 0) : (Number(acc.raterBaseINR) || 0);
+    const rev = mTotal * cLRate;
+    const cost = mTotal * cRRate;
+
+    // STRICT NOTIFICATIONS LOGIC
+    const alerts = [];
+
+    if (activeMonth === currentMonthStr && !isSuspended) {
+      if (logs.length === 0) {
+        if (today.getDate() >= 3) {
+          alerts.push({ type: 'danger', msg: '⚠️ Inactive > 3 days' });
+        }
+      } else {
+        const sortedLogs = [...logs].sort((a,b) => {
+          const dateA = new Date(a.assigned_date || 0).getTime() || 0;
+          const dateB = new Date(b.assigned_date || 0).getTime() || 0;
+          return dateB - dateA;
+        });
+        const lastLogDate = new Date(sortedLogs[0].assigned_date);
+        const timeDiff = today.getTime() - lastLogDate.getTime();
+        if (!isNaN(timeDiff)) {
+          const daysInactive = Math.floor(timeDiff / (1000 * 60 * 60 * 24));
+          if (daysInactive >= 3) {
+            alerts.push({ type: 'danger', msg: `⚠️ Inactive ${daysInactive} days` });
+          }
+        }
+      }
+    }
+
+    if (mTotal > 0 && mTotal < 5) {
+      alerts.push({ type: 'warning', msg: '📉 < 5 hrs Logged' });
+    }
+
+    const monthNumSafe = parseInt(activeMonth.split("-")[1], 10);
+    if (!isNaN(monthNumSafe) && [3, 6, 9, 12].includes(monthNumSafe) && mTotal > 0 && mTotal < 20) {
+      alerts.push({ type: 'warning', msg: '🕒 < 20 hrs Q-Risk' });
+    }
+
+    accArr.push({ ...acc, logs, wHrs, mTotal, tBase, isBonusMet, cLRate, cRRate, rev, cost, isSuspended, alerts });
+    return accArr;
+  }, []);
+
+  // 2. Filter Team (Search Text)
+  const filteredTeam = processedTeam.filter(acc => {
+    if (!searchTerm) return true;
+    const srch = searchTerm.toLowerCase();
+    return acc.email.toLowerCase().includes(srch) || (acc.clientName && acc.clientName.toLowerCase().includes(srch));
+  });
+
+  // 3. Group by Client
   const clientGroups = {};
-  myTeam.forEach(acc => {
+  filteredTeam.forEach(acc => {
     const c = (acc.clientName && typeof acc.clientName === 'string' && acc.clientName.trim() !== '') ? acc.clientName.trim() : "General Pool";
     if (!clientGroups[c]) clientGroups[c] = [];
     clientGroups[c].push(acc);
   });
 
-  // 🚀 THIS IS THE FIX: Variables accurately and strictly named
-  let grandTotalHrs = 0;
-  let grandTotalLeaderPay = 0;
-  let grandTotalRaterPay = 0;
+  // 4. Calculate Grand Totals
+  let grandHrs = 0, grandLeaderPay = 0, grandRaterPay = 0;
   const grandWkTotal = new Array(numWeeks).fill(0);
+  filteredTeam.forEach(acc => {
+    grandHrs += acc.mTotal;
+    grandLeaderPay += acc.rev;
+    grandRaterPay += acc.cost;
+    acc.wHrs.forEach((h, i) => grandWkTotal[i] += h);
+  });
+
+  // --- CSV EXPORT FUNCTION ---
+  const handleExportCSV = () => {
+    let csv = "Client,Account Name,Status,";
+    monthWeeks.forEach(w => csv += `"${w.label} (${w.dateRange})",`);
+    csv += "Total Hrs,Leader Rate,Revenue,Rater Rate,Cost,Alerts\n";
+
+    Object.keys(clientGroups).sort().forEach(client => {
+      clientGroups[client].forEach(acc => {
+        const stat = acc.isSuspended ? "Frozen" : "Active";
+        let row = `"${client}","${acc.email}","${stat}",`;
+        acc.wHrs.forEach(h => row += `"${h.toFixed(2)}",`);
+        
+        const alertStr = acc.alerts.map(a => a.msg).join(" | ");
+        row += `"${acc.mTotal.toFixed(2)}","${acc.cLRate}","${acc.rev}","${acc.cRRate}","${acc.cost}","${alertStr}"\n`;
+        csv += row;
+      });
+    });
+
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement("a");
+    const url = URL.createObjectURL(blob);
+    link.setAttribute("href", url);
+    link.setAttribute("download", `Payroll_Export_${activeMonth}.csv`);
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
 
   // --- STYLES ---
   const s = {
@@ -166,24 +270,55 @@ export default function RatersPerformance({ user }) {
   return (
     <div style={{ padding: "30px", backgroundColor: "#f1f5f9", minHeight: "100vh", fontFamily: "'Inter', sans-serif", boxSizing: "border-box" }}>
       
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginBottom: "25px" }}>
+      {/* RENDER MODAL IF CLICKED */}
+      {calendarUser && (
+        <UserCalendarModal 
+          selectedAccount={calendarUser} 
+          initialMonth={activeMonth} 
+          timeData={timeData} 
+          onClose={() => setCalendarUser(null)} 
+        />
+      )}
+
+      {/* HEADER & CONTROLS */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginBottom: "25px", flexWrap: "wrap", gap: "15px" }}>
         <div>
-          <h1 style={{ margin: 0, fontSize: "26px", fontWeight: "900", color: "#0f172a" }}>Performance Master Ledger</h1>
+          <h1 style={{ margin: 0, fontSize: "28px", fontWeight: "900", color: "#0f172a" }}>Performance Master Ledger</h1>
           <p style={{ color: "#64748b", margin: "4px 0 0 0", fontSize: "14px" }}>
             {isMasterView ? "Agency Master View" : `Team: ${myLeaderName}`} • {displayMonthName}
           </p>
         </div>
-        <input 
-          type="month" 
-          value={selectedMonth} 
-          onChange={(e) => { if (e.target.value) setSelectedMonth(e.target.value); }}
-          style={{ padding: "10px 16px", borderRadius: "8px", border: "1px solid #cbd5e1", fontWeight: "700", color: "#334155", outline: "none", cursor: "pointer", backgroundColor: "#fff", boxShadow: "0 1px 2px rgba(0,0,0,0.05)", fontSize: "14px" }}
-        />
+        
+        <div style={{ display: "flex", gap: "10px", alignItems: "center", flexWrap: "wrap" }}>
+          <input 
+            type="text" 
+            placeholder="🔍 Search user or client..." 
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            style={{ padding: "10px 14px", borderRadius: "8px", border: "1px solid #cbd5e1", fontSize: "14px", outline: "none", width: "220px" }}
+          />
+          <input 
+            type="month" 
+            value={selectedMonth} 
+            onChange={(e) => { if (e.target.value) setSelectedMonth(e.target.value); }}
+            style={{ padding: "10px 14px", borderRadius: "8px", border: "1px solid #cbd5e1", fontWeight: "700", outline: "none", cursor: "pointer", backgroundColor: "#fff" }}
+          />
+          <button 
+            onClick={handleExportCSV}
+            style={{ padding: "10px 16px", backgroundColor: "#10b981", color: "white", border: "none", borderRadius: "8px", fontWeight: "bold", cursor: "pointer", fontSize: "14px", boxShadow: "0 2px 4px rgba(16,185,129,0.3)", display: "flex", alignItems: "center", gap: "6px" }}
+          >
+            📥 Export CSV
+          </button>
+        </div>
       </div>
 
+      {/* TABLE CARD */}
       <div style={{ backgroundColor: "#fff", borderRadius: "12px", boxShadow: "0 4px 6px -1px rgba(0,0,0,0.05)", border: "1px solid #e2e8f0", overflowX: "auto" }}>
         {Object.keys(clientGroups).length === 0 ? (
-          <div style={{ padding: "60px", textAlign: "center", color: "#64748b" }}>No active accounts found for this selection.</div>
+          <div style={{ padding: "80px", textAlign: "center", color: "#64748b" }}>
+            <span style={{fontSize: "30px", display: "block", marginBottom: "10px"}}>📭</span>
+            <span style={{fontWeight: "bold", fontSize: "16px"}}>No accounts available for this selection.</span>
+          </div>
         ) : (
           <table style={{ width: "100%", borderCollapse: "collapse", whiteSpace: "nowrap" }}>
             <thead>
@@ -201,152 +336,108 @@ export default function RatersPerformance({ user }) {
                 <th style={{ ...s.th, backgroundColor: "#eff6ff", color: "#1d4ed8" }}>Total Payment<br/><span style={{fontSize: "9px"}}>(Revenue)</span></th>
                 <th style={s.th}>Rater Payrate</th>
                 <th style={{ ...s.th, backgroundColor: "#fdf2f8", color: "#be123c" }}>Rater Payment<br/><span style={{fontSize: "9px"}}>(Cost)</span></th>
-                <th style={{ ...s.th, textAlign: "left", paddingLeft: "15px", backgroundColor: "#f8fafc", width: "200px" }}>Notifications & Alerts</th>
+                <th style={{ ...s.th, textAlign: "left", paddingLeft: "15px", backgroundColor: "#f8fafc", width: "180px" }}>Notifications</th>
               </tr>
             </thead>
             <tbody>
               {Object.keys(clientGroups).sort().map(client => {
-                
-                // 🚀 FIXED: Inner variables strictly named
-                let clientTotalHrs = 0;
-                let clientTotalLeaderPay = 0;
-                let clientTotalRaterPay = 0;
-                const clientWeekTotals = new Array(numWeeks).fill(0);
+                let cHrs = 0, cLPay = 0, cRPay = 0;
+                const cWk = new Array(numWeeks).fill(0);
 
                 return (
                   <React.Fragment key={client}>
                     <tr>
-                      <td colSpan={totalColumns} style={{ backgroundColor: "#f1f5f9", padding: "10px 20px", fontWeight: "800", color: "#334155", fontSize: "12px", letterSpacing: "0.5px", borderBottom: "1px solid #cbd5e1" }}>
+                      <td colSpan={totalColumns} style={{ backgroundColor: "#f1f5f9", padding: "12px 20px", fontWeight: "800", color: "#334155", fontSize: "12px", letterSpacing: "0.5px", borderBottom: "1px solid #cbd5e1" }}>
                         💼 {client.toUpperCase()}
                       </td>
                     </tr>
 
                     {clientGroups[client].map((acc) => {
-                      const logs = timeData.filter(l => l.email === acc.email && typeof l.assigned_date === 'string' && l.assigned_date.startsWith(activeMonth));
-                      const wHrs = new Array(numWeeks).fill(0);
-                      let mTotal = 0;
-
-                      logs.forEach(l => {
-                        const h = Number(l.time_value_hours) || 0;
-                        if (!isNaN(h)) {
-                          mTotal += h;
-                          const wIdx = getWeekIndex(l.assigned_date);
-                          if (wIdx >= 0 && wIdx < numWeeks) {
-                            wHrs[wIdx] += h;
-                            clientWeekTotals[wIdx] += h;
-                            grandWkTotal[wIdx] += h; 
-                          }
-                        }
-                      });
-
-                      const tBase = Number(acc.bonusThreshold) || 40;
-                      const isBonusMet = acc.hasBonus && mTotal >= tBase;
-                      
-                      const currentLRate = isBonusMet ? (Number(acc.leaderMaxINR) || Number(acc.leaderBaseINR) || 0) : (Number(acc.leaderBaseINR) || 0);
-                      const currentRRate = isBonusMet ? (Number(acc.raterMaxINR) || Number(acc.raterBaseINR) || 0) : (Number(acc.raterBaseINR) || 0);
-                      
-                      const rev = mTotal * currentLRate;
-                      const cost = mTotal * currentRRate;
-
-                      // 🚀 FIXED: Adding to the strictly named variables
-                      clientTotalHrs += mTotal; 
-                      clientTotalLeaderPay += rev; 
-                      clientTotalRaterPay += cost;
-                      
-                      grandTotalHrs += mTotal; 
-                      grandTotalLeaderPay += rev; 
-                      grandTotalRaterPay += cost;
-
-                      const isSuspended = acc.status === 'suspended';
-                      const alerts = [];
-                      
-                      if (activeMonth === currentMonthStr && !isSuspended) {
-                        if (logs.length === 0) {
-                          alerts.push(<span key="no-log" style={{...s.alertBadge, backgroundColor: "#fef2f2", color: "#e11d48", borderColor: "#fecdd3"}}>⚠️ No hours logged this month</span>);
-                        } else {
-                          const sortedLogs = [...logs].sort((a,b) => {
-                            const dateA = new Date(a.assigned_date || 0).getTime() || 0;
-                            const dateB = new Date(b.assigned_date || 0).getTime() || 0;
-                            return dateB - dateA;
-                          });
-                          const lastLogDate = new Date(sortedLogs[0].assigned_date);
-                          const timeDiff = today.getTime() - lastLogDate.getTime();
-                          
-                          if (!isNaN(timeDiff)) {
-                            const daysInactive = Math.floor(timeDiff / (1000 * 60 * 60 * 24));
-                            if (daysInactive >= 2) {
-                              alerts.push(<span key="inactive" style={{...s.alertBadge, backgroundColor: "#fef2f2", color: "#e11d48", borderColor: "#fecdd3"}}>⚠️ Inactive for {daysInactive} days</span>);
-                            }
-                          }
-                        }
-                      }
-
-                      if (mTotal > 0 && mTotal < 5) {
-                        alerts.push(<span key="low-mon" style={{...s.alertBadge, backgroundColor: "#fff7ed", color: "#ea580c", borderColor: "#fed7aa"}}>📉 Low Vol: &lt; 5 hrs</span>);
-                      }
-
-                      const monthNumSafe = parseInt(activeMonth.split("-")[1], 10);
-                      if (!isNaN(monthNumSafe) && [3, 6, 9, 12].includes(monthNumSafe) && mTotal > 0 && mTotal < 20) {
-                        alerts.push(<span key="q-risk" style={{...s.alertBadge, backgroundColor: "#fff7ed", color: "#ea580c", borderColor: "#fed7aa"}}>🕒 Q-Risk: &lt; 20 hrs</span>);
-                      }
+                      cHrs += acc.mTotal; cLPay += acc.rev; cRPay += acc.cost;
+                      acc.wHrs.forEach((h, i) => cWk[i] += h);
 
                       const safeKey = acc.id || acc.email || Math.random().toString();
 
                       return (
-                        <tr key={safeKey} style={{ backgroundColor: isSuspended ? "#fff1f2" : "#fff", transition: "0.2s" }} onMouseOver={(e) => !isSuspended && (e.currentTarget.style.backgroundColor = "#f8fafc")} onMouseOut={(e) => !isSuspended && (e.currentTarget.style.backgroundColor = "#fff")}>
-                          <td style={{ ...s.td, textAlign: "left", paddingLeft: "20px", color: isSuspended ? "#94a3b8" : "#0f172a", fontWeight: "600" }}>
-                            {acc.email || "Unknown Account"} {isSuspended && "🔒"}
+                        <tr 
+                          key={safeKey}
+                          onClick={() => setCalendarUser(acc)}
+                          style={{ backgroundColor: acc.isSuspended ? "#fff1f2" : "#fff", cursor: "pointer", transition: "0.2s" }} 
+                          onMouseOver={(e) => !acc.isSuspended && (e.currentTarget.style.backgroundColor = "#f8fafc")} 
+                          onMouseOut={(e) => !acc.isSuspended && (e.currentTarget.style.backgroundColor = "#fff")}
+                          title="Click to open full monthly calendar details"
+                        >
+                          <td style={{ ...s.td, textAlign: "left", paddingLeft: "20px", color: acc.isSuspended ? "#94a3b8" : "#0f172a", fontWeight: "600" }}>
+                            <div style={{display: "flex", alignItems: "center", gap: "8px"}}>
+                              <span style={{fontSize: "14px", opacity: "0.6"}}>📅</span>
+                              {acc.email || "Unknown Account"} {acc.isSuspended && "🔒"}
+                            </div>
                           </td>
-                          {wHrs.map((h, i) => (
+                          {acc.wHrs.map((h, i) => (
                             <td key={i} style={{ ...s.td, color: h === 0 ? "#cbd5e1" : "#475569", fontWeight: h > 0 ? "600" : "400" }}>
                               {formatTime(h)}
                             </td>
                           ))}
-                          <td style={{ ...s.td, backgroundColor: "#fffbeb", fontWeight: "800", color: mTotal === 0 ? "#94a3b8" : "#d97706" }}>
-                            {mTotal > 0 ? Number(mTotal).toFixed(2) : "-"}
+                          <td style={{ ...s.td, backgroundColor: "#fffbeb", fontWeight: "800", color: acc.mTotal === 0 ? "#94a3b8" : "#d97706" }}>
+                            {acc.mTotal > 0 ? Number(acc.mTotal).toFixed(2) : "-"}
                           </td>
                           <td style={s.spacer}></td>
-                          <td style={{ ...s.td, color: "#64748b", fontWeight: "600" }}>₹{currentLRate}</td>
-                          <td style={{ ...s.td, backgroundColor: "#eff6ff", color: "#1d4ed8", fontWeight: "800", fontSize: "14px" }}>
-                            ₹{formatMoney(rev, 0)}
-                          </td>
-                          <td style={{ ...s.td, backgroundColor: isBonusMet ? "#ecfdf5" : "transparent" }}>
-                            {isBonusMet ? (
+                          
+                          {/* LEADER RATE WITH BONUS BADGE */}
+                          <td style={{ ...s.td, backgroundColor: acc.isBonusMet ? "#ecfdf5" : "transparent" }}>
+                            {acc.isBonusMet ? (
                               <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "2px" }}>
-                                <span style={{ color: "#059669", fontWeight: "900", fontSize: "14px" }}>₹{currentRRate}</span>
+                                <span style={{ color: "#059669", fontWeight: "900", fontSize: "14px" }}>₹{acc.cLRate}</span>
                                 <span style={{ fontSize: "9px", backgroundColor: "#10b981", color: "#fff", padding: "2px 6px", borderRadius: "4px", fontWeight: "bold" }}>🎯 BONUS ACTIVE</span>
                               </div>
                             ) : (
-                              <span style={{ color: "#64748b", fontWeight: "600" }}>₹{currentRRate}</span>
+                              <span style={{ color: "#64748b", fontWeight: "600" }}>₹{acc.cLRate}</span>
                             )}
                           </td>
-                          <td style={{ ...s.td, backgroundColor: isBonusMet ? "#fdf2f8" : "#fff", color: "#be123c", fontWeight: "800", fontSize: "14px" }}>
-                            ₹{formatMoney(cost, 2)}
+                          <td style={{ ...s.td, backgroundColor: "#eff6ff", color: "#1d4ed8", fontWeight: "800", fontSize: "14px" }}>
+                            ₹{formatMoney(acc.rev, 0)}
                           </td>
+
+                          {/* RATER RATE WITH BONUS BADGE */}
+                          <td style={{ ...s.td, backgroundColor: acc.isBonusMet ? "#ecfdf5" : "transparent" }}>
+                            {acc.isBonusMet ? (
+                              <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "2px" }}>
+                                <span style={{ color: "#059669", fontWeight: "900", fontSize: "14px" }}>₹{acc.cRRate}</span>
+                                <span style={{ fontSize: "9px", backgroundColor: "#10b981", color: "#fff", padding: "2px 6px", borderRadius: "4px", fontWeight: "bold" }}>🎯 BONUS ACTIVE</span>
+                              </div>
+                            ) : (
+                              <span style={{ color: "#64748b", fontWeight: "600" }}>₹{acc.cRRate}</span>
+                            )}
+                          </td>
+                          <td style={{ ...s.td, backgroundColor: acc.isBonusMet ? "#fdf2f8" : "#fff", color: "#be123c", fontWeight: "800", fontSize: "14px" }}>
+                            ₹{formatMoney(acc.cost, 2)}
+                          </td>
+                          
+                          {/* STRICT NOTIFICATIONS */}
                           <td style={{ ...s.td, textAlign: "left", paddingLeft: "15px", backgroundColor: "#f8fafc", borderRight: "none" }}>
                             <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-                              {isSuspended ? (
-                                <span style={{ ...s.alertBadge, backgroundColor: "#f1f5f9", color: "#64748b", border: "1px solid #cbd5e1" }}>❄️ Account Frozen</span>
-                              ) : alerts.length > 0 ? (
-                                alerts
-                              ) : (
-                                <span style={{ fontSize: "11px", color: "#10b981", fontWeight: "600" }}>✔️ On Track</span>
-                              )}
+                              {acc.isSuspended && <span style={{ ...s.alertBadge, backgroundColor: "#f1f5f9", color: "#64748b", border: "1px solid #cbd5e1" }}>❄️ Frozen</span>}
+                              {acc.alerts.length > 0 ? acc.alerts.map((a, i) => (
+                                <span key={i} style={{ ...s.alertBadge, backgroundColor: a.type === 'danger' ? "#fef2f2" : "#fff7ed", color: a.type === 'danger' ? "#e11d48" : "#ea580c", border: `1px solid ${a.type === 'danger' ? '#fecdd3' : '#fed7aa'}` }}>
+                                  {a.msg}
+                                </span>
+                              )) : (!acc.isSuspended && <span style={{ fontSize: "11px", color: "#10b981", fontWeight: "600" }}>✔️ On Track</span>)}
                             </div>
                           </td>
                         </tr>
                       );
                     })}
 
+                    {/* CLIENT SUBTOTAL ROW */}
                     <tr style={{ backgroundColor: "#f8fafc", borderTop: "2px solid #e2e8f0" }}>
                       <td style={{ ...s.td, textAlign: "right", paddingRight: "20px", fontWeight: "800", color: "#475569" }}>Subtotal:</td>
-                      {clientWeekTotals.map((h, i) => <td key={i} style={{ ...s.td, fontWeight: "700", color: "#64748b" }}>{formatTime(h)}</td>)}
-                      <td style={{ ...s.td, fontWeight: "800", color: "#b45309" }}>{clientTotalHrs > 0 ? Number(clientTotalHrs).toFixed(2) : "-"}</td>
+                      {cWk.map((h, i) => <td key={i} style={{ ...s.td, fontWeight: "700", color: "#64748b" }}>{formatTime(h)}</td>)}
+                      <td style={{ ...s.td, fontWeight: "800", color: "#b45309" }}>{cHrs > 0 ? Number(cHrs).toFixed(2) : "-"}</td>
                       <td style={s.spacer}></td>
                       <td style={s.td}></td>
-                      <td style={{ ...s.td, fontWeight: "800", color: "#1d4ed8" }}>₹{formatMoney(clientTotalLeaderPay, 0)}</td>
+                      <td style={{ ...s.td, fontWeight: "800", color: "#1d4ed8" }}>₹{formatMoney(cLPay, 0)}</td>
                       <td style={s.td}></td>
-                      <td style={{ ...s.td, fontWeight: "800", color: "#be123c" }}>₹{formatMoney(clientTotalRaterPay, 2)}</td>
+                      <td style={{ ...s.td, fontWeight: "800", color: "#be123c" }}>₹{formatMoney(cRPay, 2)}</td>
                       <td style={{ ...s.td, borderRight: "none" }}></td>
                     </tr>
                     <tr style={{ height: "8px" }}><td colSpan={totalColumns} style={{ border: "none" }}></td></tr>
@@ -355,14 +446,14 @@ export default function RatersPerformance({ user }) {
               })}
 
               <tr style={{ backgroundColor: "#0f172a" }}>
-                <td style={{ padding: "20px", textAlign: "right", fontWeight: "900", color: "#fff", fontSize: "14px", border: "none" }}>AGENCY TOTALS:</td>
+                <td style={{ padding: "20px", textAlign: "right", fontWeight: "900", color: "#fff", fontSize: "14px", border: "none" }}>FILTERED TOTALS:</td>
                 {grandWkTotal.map((h, i) => <td key={i} style={{ padding: "20px 10px", textAlign: "center", color: "#94a3b8", fontWeight: "700", border: "none" }}>{formatTime(h)}</td>)}
-                <td style={{ padding: "20px 10px", textAlign: "center", color: "#fbbf24", fontWeight: "900", fontSize: "15px", border: "none" }}>{grandTotalHrs > 0 ? Number(grandTotalHrs).toFixed(2) : "-"}</td>
+                <td style={{ padding: "20px 10px", textAlign: "center", color: "#fbbf24", fontWeight: "900", fontSize: "15px", border: "none" }}>{grandHrs > 0 ? Number(grandHrs).toFixed(2) : "-"}</td>
                 <td style={{ backgroundColor: "#0f172a", border: "none" }}></td>
                 <td style={{ border: "none" }}></td>
-                <td style={{ padding: "20px 10px", textAlign: "center", color: "#60a5fa", fontWeight: "900", fontSize: "16px", border: "none" }}>₹{formatMoney(grandTotalLeaderPay, 0)}</td>
+                <td style={{ padding: "20px 10px", textAlign: "center", color: "#60a5fa", fontWeight: "900", fontSize: "16px", border: "none" }}>₹{formatMoney(grandLeaderPay, 0)}</td>
                 <td style={{ border: "none" }}></td>
-                <td style={{ padding: "20px 10px", textAlign: "center", color: "#f87171", fontWeight: "900", fontSize: "16px", border: "none" }}>₹{formatMoney(grandTotalRaterPay, 2)}</td>
+                <td style={{ padding: "20px 10px", textAlign: "center", color: "#f87171", fontWeight: "900", fontSize: "16px", border: "none" }}>₹{formatMoney(grandRaterPay, 2)}</td>
                 <td style={{ border: "none" }}></td>
               </tr>
             </tbody>

@@ -18,12 +18,12 @@ function App() {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
   
-  // View State (Switches between 'dashboard', 'workProgress', 'ratersPerformance', and 'admin')
+  // View State (Switches between components)
   const [currentView, setCurrentView] = useState('dashboard');
   
-  // Role & Version State for Navigation and Data Filtering
+  // Role & Version State
   const [myRole, setMyRole] = useState('rater');
-  const [myVersion, setMyVersion] = useState(1); // 👈 NEW: Tracks which version of the account is active
+  const [myVersion, setMyVersion] = useState(1); 
 
   // Form States
   const [isLogin, setIsLogin] = useState(true);
@@ -40,7 +40,7 @@ function App() {
     return () => unsubscribe();
   }, []);
 
-  // 2. Fetch User Role, Version & Auto-Add New Users to Database
+  // 2. Fetch User Role & Auto-Add New Users to Database
   useEffect(() => {
     if (!user?.email) return;
 
@@ -50,15 +50,12 @@ function App() {
         const docSnap = await getDoc(userRef);
         
         if (!docSnap.exists()) {
-          // Auto-generate profile with V1 versioning attached
           await setDoc(userRef, {
             email: user.email,
             role: 'rater',
             status: 'active',
-            hourlyRate: 160,
-            leaderEmail: '',
-            currentVersion: 1, // 👈 Start at Version 1
-            maxVersion: 1      // 👈 Highest version generated so far is 1
+            currentVersion: 1, 
+            maxVersion: 1      
           });
           console.log("Added new user to database:", user.email);
         }
@@ -74,7 +71,7 @@ function App() {
       if (docSnap.exists()) {
         const data = docSnap.data();
         setMyRole(data.role || 'rater');
-        setMyVersion(data.currentVersion || 1); // 👈 Pull active version from DB
+        setMyVersion(data.currentVersion || 1); 
       } else {
         setMyRole('rater');
         setMyVersion(1);
@@ -102,7 +99,7 @@ function App() {
   };
 
   const handleLogout = async () => {
-    setCurrentView('dashboard'); // Reset view on logout
+    setCurrentView('dashboard'); 
     await signOut(auth);
   };
 
@@ -150,23 +147,63 @@ function App() {
     );
   }
 
+  // 🚀 DEFINE WHO SEES WHAT (STRICT TIERED ACCESS)
+  const isManager = myRole === 'leader' || myRole === 'co-admin' || myRole === 'admin';
+  const isCoAdmin = myRole === 'co-admin' || myRole === 'admin';
+  const isAdmin = myRole === 'admin';
+
   // --- THE MAIN DASHBOARD ---
   return (
     <div style={{ width: '100%', maxWidth: '100%', boxSizing: 'border-box', margin: '0', padding: '20px 40px', fontFamily: 'sans-serif' }}>
       
       <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #ccc', paddingBottom: '15px' }}>
-        <h2 style={{ margin: 0 }}>Dashboard</h2>
+        <h2 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '10px' }}>
+          Dashboard
+          <span style={{ fontSize: '12px', backgroundColor: '#e2e8f0', padding: '4px 8px', borderRadius: '12px', textTransform: 'uppercase', color: '#475569' }}>
+            {myRole}
+          </span>
+        </h2>
+        
         <div style={{ display: 'flex', alignItems: 'center', gap: '15px' }}>
           
-          {/* 🚀 ADMIN PANEL BUTTON (Only visible to Admins) */}
-          {myRole === 'admin' && (
+          <button 
+            onClick={() => setCurrentView('dashboard')} 
+            style={{ padding: '6px 14px', cursor: 'pointer', border: 'none', borderRadius: '6px', background: currentView === 'dashboard' ? '#007BFF' : '#f8f9fa', color: currentView === 'dashboard' ? 'white' : '#333', fontWeight: 'bold' }}
+          >
+            📅 My Calendar
+          </button>
+
+          {/* 🚀 LEADER / CO-ADMIN / ADMIN BUTTON */}
+          {isManager && (
             <button 
-              onClick={() => setCurrentView('admin')} 
-              style={{ padding: '6px 14px', cursor: 'pointer', border: 'none', borderRadius: '6px', background: '#1e293b', color: 'white', fontWeight: 'bold' }}
+              onClick={() => setCurrentView('ratersPerformance')} 
+              style={{ padding: '6px 14px', cursor: 'pointer', border: 'none', borderRadius: '6px', background: currentView === 'ratersPerformance' ? '#007BFF' : '#f8f9fa', color: currentView === 'ratersPerformance' ? 'white' : '#333', fontWeight: 'bold' }}
             >
-              🔐 Admin Panel
+              👥 My Team
             </button>
           )}
+
+          {/* 🚀 CO-ADMIN / ADMIN BUTTON */}
+          {isCoAdmin && (
+            <button 
+              onClick={() => setCurrentView('accountManagement')} 
+              style={{ padding: '6px 14px', cursor: 'pointer', border: 'none', borderRadius: '6px', background: currentView === 'accountManagement' ? '#10b981' : '#ecfdf5', color: currentView === 'accountManagement' ? 'white' : '#047857', fontWeight: 'bold' }}
+            >
+              💼 Agency Finances
+            </button>
+          )}
+
+          {/* 🚀 STRICT ADMIN ONLY BUTTON */}
+          {isAdmin && (
+            <button 
+              onClick={() => setCurrentView('admin')} 
+              style={{ padding: '6px 14px', cursor: 'pointer', border: 'none', borderRadius: '6px', background: currentView === 'admin' ? '#1e293b' : '#f1f5f9', color: currentView === 'admin' ? 'white' : '#334155', fontWeight: 'bold' }}
+            >
+              🔐 Staff Access
+            </button>
+          )}
+
+          <div style={{ width: '1px', height: '24px', backgroundColor: '#ccc', margin: '0 5px' }}></div>
 
           <span style={{ fontSize: '14px', color: '#555' }}>{user.email}</span>
           <button onClick={handleLogout} style={{ padding: '6px 12px', cursor: 'pointer', border: '1px solid #ccc', borderRadius: '4px', background: '#fff' }}>Log Out</button>
@@ -174,14 +211,14 @@ function App() {
       </header>
       
       <main style={{ marginTop: '25px' }}>
-        {/* Toggle between all your screens based on the currentView state */}
-        {/* 🚀 Pass myVersion down to TimeLedger! */}
+        {/* Public/Standard Routes */}
         {currentView === 'dashboard' && <TimeLedger user={user} myVersion={myVersion} setCurrentView={setCurrentView} />}
-        
         {currentView === 'workProgress' && <WorkProgress user={user} setCurrentView={setCurrentView} />}
-        {currentView === 'ratersPerformance' && <RatersPerformance user={user} setCurrentView={setCurrentView} />}
-        {currentView === 'admin' && <AdminPanel setCurrentView={setCurrentView} />}
-        {currentView === 'accountManagement' && <AccountManagement setCurrentView={setCurrentView} />}
+        
+        {/* Protected Routes (Matched to the new permission checks) */}
+        {currentView === 'ratersPerformance' && isManager && <RatersPerformance user={user} setCurrentView={setCurrentView} />}
+        {currentView === 'accountManagement' && isCoAdmin && <AccountManagement setCurrentView={setCurrentView} currentUser={user} myRole={myRole} />}
+        {currentView === 'admin' && isAdmin && <AdminPanel setCurrentView={setCurrentView} currentUser={user} myRole={myRole} />}
       </main>
       
     </div>

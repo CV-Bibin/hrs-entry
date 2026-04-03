@@ -40,10 +40,18 @@ export default function TimeLedger({ user, myVersion, setCurrentView }) {
 
   const [isPrevMonthLocked, setIsPrevMonthLocked] = useState(true);
 
-  // 🚀 STATE FOR ROLES, STATUS, AND PAY
+  // 🚀 STATE FOR ROLES, STATUS, CLIENT NAME, AND DYNAMIC PAY
   const [myRole, setMyRole] = useState('rater');
   const [myStatus, setMyStatus] = useState('active'); 
-  const [myHourlyRate, setMyHourlyRate] = useState(160); 
+  const [clientName, setClientName] = useState("General Account");
+  const [payData, setPayData] = useState({ 
+    raterBaseINR: 0, 
+    raterBonusINR: 0, 
+    leaderBaseINR: 0, 
+    leaderBonusINR: 0, 
+    payRateUSD: 0, 
+    bonusThreshold: 0 
+  });
 
   const currentMonthId = `${selectedDate.split("-")[1]}-${selectedDate.split("-")[0]}`;
   const targetMonthPrefix = `${selectedDate.split("-")[0]}-${selectedDate.split("-")[1]}`;
@@ -55,7 +63,7 @@ export default function TimeLedger({ user, myVersion, setCurrentView }) {
   const prevMonthYYYY_MM = `${prevMonthDate.getFullYear()}-${String(prevMonthDate.getMonth() + 1).padStart(2, '0')}`;
 
   // ==========================================
-  // 🛡️ FETCH USER ROLE & STATUS
+  // 🛡️ FETCH USER DATA & REAL-TIME PAY RATES
   // ==========================================
   useEffect(() => {
     if (!user?.email) return;
@@ -65,7 +73,17 @@ export default function TimeLedger({ user, myVersion, setCurrentView }) {
         const userData = snap.docs[0].data();
         setMyRole(userData.role || 'rater');
         setMyStatus(userData.status || 'active'); 
-        setMyHourlyRate(userData.hourlyRate || 160); 
+        setClientName(userData.clientName || "General Account"); // Fetch the assigned client name
+        
+        // Grab exact, real-time rates from the database
+        setPayData({
+          raterBaseINR: Number(userData.raterBaseINR) || 0,
+          raterBonusINR: Number(userData.raterBonusINR) || 0,
+          leaderBaseINR: Number(userData.leaderBaseINR) || 0,
+          leaderBonusINR: Number(userData.leaderBonusINR) || 0,
+          payRateUSD: Number(userData.payRateUSD) || 0,
+          bonusThreshold: Number(userData.bonusThreshold) || 0
+        });
       } else {
         setMyRole('rater');
         setMyStatus('active');
@@ -75,7 +93,7 @@ export default function TimeLedger({ user, myVersion, setCurrentView }) {
   }, [user?.email]);
 
   // ==========================================
-  // 🛡️ NEW ACCOUNT BYPASS LOGIC
+  // 🛡️ LOCKOUT LOGIC
   // ==========================================
   const creationDate = user?.metadata?.creationTime ? new Date(user.metadata.creationTime) : new Date();
   const creationYYYY_MM = `${creationDate.getFullYear()}-${String(creationDate.getMonth() + 1).padStart(2, '0')}`;
@@ -85,7 +103,7 @@ export default function TimeLedger({ user, myVersion, setCurrentView }) {
   const isViewingCurrentMonth = targetMonthPrefix === todayYYYY_MM;
   
   const isEntryBlocked = isViewingCurrentMonth && !isPrevMonthLocked && requiresPrevMonthLock;
-  const isFormDisabled = isMonthLocked || isEntryBlocked || myStatus === 'suspended'; // Also disable if suspended
+  const isFormDisabled = isMonthLocked || isEntryBlocked || myStatus === 'suspended'; 
 
   const showAlert = (type, title, message, onConfirm = null, confirmText = 'Confirm') => setAlertConfig({ isOpen: true, type, title, message, onConfirm, confirmText });
   const closeAlert = () => setAlertConfig(prev => ({ ...prev, isOpen: false }));
@@ -103,7 +121,7 @@ export default function TimeLedger({ user, myVersion, setCurrentView }) {
   }, [user, prevMonthId]);
 
   // ==========================================
-  // 📊 FETCH TIME ENTRIES (FILTERED BY VERSION)
+  // 📊 FETCH TIME ENTRIES
   // ==========================================
   useEffect(() => {
     if (!user) return;
@@ -114,7 +132,6 @@ export default function TimeLedger({ user, myVersion, setCurrentView }) {
     return onSnapshot(q, (snap) => {
       const fetched = snap.docs.map(d => ({ id: d.id, ...d.data() }));
       
-      // Filter out any entries that don't match the currently active version!
       const versionFiltered = fetched.filter(entry => (entry.version || 1) === (myVersion || 1));
       
       setAllEntries(versionFiltered);
@@ -133,8 +150,6 @@ export default function TimeLedger({ user, myVersion, setCurrentView }) {
     e.preventDefault();
     if (isFormDisabled || (calcHrs <= 0 && !editingId)) return;
     if (selectedDate < minDateString) return showAlert('error', 'Date Locked', 'Older than 30 days.');
-    
-    // 🚀 NEW: Block future dates on submission!
     if (selectedDate > todayString) return showAlert('error', 'Invalid Date', 'You cannot log hours for future dates.');
 
     const hoursToSave = Number(calcHrs.toFixed(3));
@@ -145,17 +160,22 @@ export default function TimeLedger({ user, myVersion, setCurrentView }) {
 
     try {
       if (currentId) {
-         await updateDoc(doc(db, "time_entries", currentId), { time_value_hours: hoursToSave, raw_input: raw, last_edited: Date.now() });
+         await updateDoc(doc(db, "time_entries", currentId), { 
+           time_value_hours: hoursToSave, 
+           raw_input: raw, 
+           last_edited: Date.now(),
+           clientName: clientName // Store the client name even on edits
+         });
       } else {
          await addDoc(collection(db, 'time_entries'), { 
             uid: user.uid, 
             email: user.email, 
+            clientName: clientName, // 🚀 SAVE WHICH PROJECT THIS IS FOR
             assigned_date: selectedDate, 
             time_value_hours: hoursToSave, 
             timestamp_entered: Date.now(), 
             raw_input: raw, 
-            groupId: "Unassigned",
-            version: myVersion || 1 // 👈 Save the active version
+            version: myVersion || 1
          });
       }
     } catch (err) { showAlert('error', 'Error', 'Failed to save.'); }
@@ -188,7 +208,6 @@ export default function TimeLedger({ user, myVersion, setCurrentView }) {
       
       <CustomAlert config={alertConfig} closeAlert={closeAlert} />
       
-      {/* 🚨 NEW SUSPENSION WARNING 🚨 */}
       {myStatus === 'suspended' && (
         <div style={{ backgroundColor: '#ffebe9', color: '#cf222e', padding: '20px', borderRadius: '8px', margin: '0 auto 20px auto', textAlign: 'center', border: '2px solid #ff8182' }}>
           <h3 style={{ margin: "0 0 10px 0" }}>🚫 Account Suspended</h3>
@@ -271,7 +290,7 @@ export default function TimeLedger({ user, myVersion, setCurrentView }) {
           <CalendarBoard 
             user={user} 
             myRole={myRole} 
-            myHourlyRate={myHourlyRate}
+            payData={payData} // 🚀 Passed dynamic values to the Calendar
             selectedDate={selectedDate} setSelectedDate={setSelectedDate} setEditingId={setEditingId}
             monthlyEntries={monthlyEntries} monthlyTotal={monthlyTotal} targetMonthPrefix={targetMonthPrefix}
             todayString={todayString} minDateString={minDateString} 

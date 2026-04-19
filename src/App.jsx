@@ -6,6 +6,7 @@ import AccountManagement from './components/AccountManagement';
 import Earnings from './components/Earnings.jsx'; 
 import TeamPerformanceGraphs from './components/TeamPerformanceGraphs';
 import PayoutLedger from './components/PayoutLedger'; // 🚀 IMPORT NEW PAYOUT COMPONENT
+import TaskTimer from './components/TaskTimer'; // 🚀 IMPORT THE TIMER
 
 import { useState, useEffect } from 'react';
 import { 
@@ -366,6 +367,9 @@ function App() {
         {/* 🚀 ADDED THE ROUTE FOR THE NEW COMPONENT */}
         {currentView === 'payoutLedger' && isCoAdmin && <PayoutLedger user={user} />}
       </main>
+
+      {/* 🚀 ADD THE WIDGET HERE SO IT ALWAYS FLOATS OVER THE APP */}
+      {user && <TaskTimer />}
 
       {/* SMART PASSWORD MODAL */}
       {isPwdModalOpen && (

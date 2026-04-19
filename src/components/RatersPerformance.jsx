@@ -1,20 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import { db } from "../firebase";
-import { collection, onSnapshot } from "firebase/firestore";
+import { collection, onSnapshot, doc } from "firebase/firestore";
 import UserCalendarModal from './UserCalendarModal.jsx';
+import PerformanceTable from './PerformanceTable.jsx';
+import LeaderPayouts from './LeaderPayouts.jsx';
 
 // --- STABLE UTILITIES ---
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-
-const formatTime = (decimalHours) => {
-  const val = Number(decimalHours);
-  if (isNaN(val) || val <= 0) return "-";
-  const h = Math.floor(val);
-  const m = Math.round((val - h) * 60);
-  if (h === 0) return `${m}m`;
-  if (m === 0) return `${h}h`;
-  return `${h}h ${m}m`;
-};
 
 const formatMoney = (num, decimals = 0) => {
   const val = Number(num);
@@ -32,8 +24,6 @@ const getWeeksWithDates = (monthString) => {
 
     const firstDay = new Date(y, m - 1, 1);
     const lastDay = new Date(y, m, 0);
-    if (isNaN(firstDay.getTime()) || isNaN(lastDay.getTime())) return [];
-
     const weeks = [];
     let currentStart = new Date(firstDay);
     let safeLoopGuard = 0;
@@ -48,18 +38,12 @@ const getWeeksWithDates = (monthString) => {
       const startM = MONTHS[currentStart.getMonth()] || "";
       const endM = MONTHS[currentEnd.getMonth()] || "";
 
-      weeks.push({ 
-        label: `W${weeks.length + 1}`, 
-        dateRange: `${currentStart.getDate()} ${startM} - ${currentEnd.getDate()} ${endM}` 
-      });
-      
+      weeks.push({ label: `W${weeks.length + 1}`, dateRange: `${currentStart.getDate()} ${startM} - ${currentEnd.getDate()} ${endM}` });
       currentStart = new Date(currentEnd);
       currentStart.setDate(currentStart.getDate() + 1);
     }
     return weeks;
-  } catch (err) {
-    return [];
-  }
+  } catch (err) { return []; }
 };
 
 const getWeekIndex = (dateString) => { 
@@ -70,26 +54,30 @@ const getWeekIndex = (dateString) => {
     const m = parseInt(parts[1], 10);
     const d = parseInt(parts[2], 10);
     if (isNaN(y) || isNaN(m) || isNaN(d)) return 0;
-
     const firstDayOffset = new Date(y, m - 1, 1).getDay();
     const index = Math.floor((d - 1 + firstDayOffset) / 7);
     return isNaN(index) || index < 0 ? 0 : index;
-  } catch (err) {
-    return 0;
+  } catch (err) { return 0; }
+};
+
+const getActualLeader = (acc) => {
+  if (acc.role === 'leader' || acc.role === 'co-admin') {
+    return (acc.leaderName || "").trim();
   }
+  return (acc.assignedLeader || "").trim();
 };
 
 export default function RatersPerformance({ user }) {
   const [usersList, setUsersList] = useState([]);
   const [timeData, setTimeData] = useState([]);
+  const [globalNames, setGlobalNames] = useState({ coAdminNames: [] });
   const [loading, setLoading] = useState(true);
 
   const today = new Date();
   const currentMonthStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`;
   const [selectedMonth, setSelectedMonth] = useState(currentMonthStr);
   const [searchTerm, setSearchTerm] = useState("");
-  
-  // Modal State
+  const [selectedClient, setSelectedClient] = useState("All");
   const [calendarUser, setCalendarUser] = useState(null);
 
   useEffect(() => {
@@ -100,7 +88,10 @@ export default function RatersPerformance({ user }) {
     const unsubTime = onSnapshot(collection(db, "time_entries"), (snap) => {
       setTimeData(snap.docs.map(d => ({ id: d.id, ...d.data() })));
     });
-    return () => { unsubUsers(); unsubTime(); };
+    const unsubSettings = onSnapshot(doc(db, "systemSettings", "roles"), (snap) => {
+      if (snap.exists()) setGlobalNames(snap.data());
+    });
+    return () => { unsubUsers(); unsubTime(); unsubSettings(); };
   }, []);
 
   if (loading) return <div style={{ padding: "100px", textAlign: "center", color: "#64748b", fontWeight: "600" }}>Fetching Database...</div>;
@@ -109,38 +100,55 @@ export default function RatersPerformance({ user }) {
   const myProfile = usersList.find(u => u.email === user.email);
   if (!myProfile) return <div style={{ padding: "100px", textAlign: "center", color: "#64748b", fontWeight: "600" }}>Loading Permissions...</div>;
 
-  const isAdmin = myProfile.role === 'admin' || myProfile.role === 'co-admin';
-  const myLeaderName = myProfile.leaderName;
+  const isMainAdmin = myProfile.role === 'admin';
+  const isCoAdmin = myProfile.role === 'co-admin';
+  const isLeader = myProfile.role === 'leader';
+  const myLeaderName = myProfile.leaderName || "Unknown";
   
   let myRawTeam = [];
   let isMasterView = false;
 
-  if (isAdmin) {
-    if (myLeaderName) {
-      myRawTeam = usersList.filter(u => (u.role === 'rater' && u.assignedLeader === myLeaderName) || u.email === user.email);
-    } else {
-      myRawTeam = usersList.filter(u => u.role === 'rater' || u.email === user.email);
-      isMasterView = true;
-    }
-  } else if (myProfile.role === 'leader') {
+  const otherCoAdmins = (globalNames.coAdminNames || []).filter(n => n !== myLeaderName).map(n => n.toLowerCase());
+
+  if (isMainAdmin) {
+    myRawTeam = usersList; 
+    isMasterView = true;
+  } else if (isCoAdmin) {
+    myRawTeam = usersList.filter(u => {
+      const actualLeader = getActualLeader(u);
+      
+      if (u.email === user.email || actualLeader.toLowerCase() === myLeaderName.toLowerCase()) return true;
+      if (u.role === 'admin' || u.role === 'co-admin') return false;
+
+      const cName = (u.clientName || "").trim().toLowerCase();
+      let lName = actualLeader.toLowerCase();
+      
+      if (lName === "" && otherCoAdmins.includes(cName)) lName = cName;
+      if (otherCoAdmins.includes(cName) && cName === lName) return false;
+      
+      return true; 
+    });
+    isMasterView = true;
+  } else if (isLeader) {
     if (!myLeaderName) return <div style={{ margin: "100px auto", textAlign: "center", color: "#be123c", backgroundColor: "#fff1f2", padding: "40px", borderRadius: "12px", border: "1px solid #fecdd3", maxWidth: "500px" }}><h2 style={{margin: 0}}>Profile Incomplete</h2></div>;
-    myRawTeam = usersList.filter(u => (u.role === 'rater' && u.assignedLeader === myLeaderName) || u.email === user.email);
+    myRawTeam = usersList.filter(u => {
+      const actualLeader = getActualLeader(u);
+      return (u.role === 'rater' && actualLeader.toLowerCase() === myLeaderName.toLowerCase()) || u.email === user.email;
+    });
   } else {
     return <div style={{ padding: "100px", textAlign: "center", color: "#ef4444", fontWeight: "bold" }}>Unauthorized Access.</div>;
   }
 
-  // --- PRE-PROCESS & CLEAN DATA ---
   const activeMonth = selectedMonth || currentMonthStr;
   const monthWeeks = getWeeksWithDates(activeMonth);
   const numWeeks = Math.max(1, monthWeeks.length);
-  const totalColumns = numWeeks + 8;
+  const totalColumns = numWeeks + ((isMainAdmin || isCoAdmin) ? 9 : 7); 
 
   let displayMonthName = activeMonth;
   const [yStr, mStr] = activeMonth.split('-');
   const mIndex = parseInt(mStr, 10) - 1;
   if (!isNaN(mIndex) && mIndex >= 0 && mIndex < 12) displayMonthName = `${MONTHS[mIndex]} ${yStr}`;
 
-  // 1. Calculate stats and apply strict filters
   const processedTeam = myRawTeam.reduce((accArr, acc) => {
     const logs = timeData.filter(l => l.email === acc.email && typeof l.assigned_date === 'string' && l.assigned_date.startsWith(activeMonth));
     const wHrs = new Array(numWeeks).fill(0);
@@ -156,71 +164,91 @@ export default function RatersPerformance({ user }) {
     });
 
     const isSuspended = acc.status === 'suspended';
-
-    // Hide Disabled Accounts with 0 hours this month
     if (isSuspended && mTotal === 0) return accArr;
 
     const tBase = Number(acc.bonusThreshold) || 40;
     const isBonusMet = acc.hasBonus && mTotal >= tBase;
+    
+    const isNoRater = !!acc.noRater || String(acc.raterName || "").trim().toLowerCase() === "self";
     const cLRate = isBonusMet ? (Number(acc.leaderMaxINR) || Number(acc.leaderBaseINR) || 0) : (Number(acc.leaderBaseINR) || 0);
-    const cRRate = isBonusMet ? (Number(acc.raterMaxINR) || Number(acc.raterBaseINR) || 0) : (Number(acc.raterBaseINR) || 0);
+    const cRRate = isNoRater ? 0 : (isBonusMet ? (Number(acc.raterMaxINR) || Number(acc.raterBaseINR) || 0) : (Number(acc.raterBaseINR) || 0));
+
     const rev = mTotal * cLRate;
     const cost = mTotal * cRRate;
 
-    // STRICT NOTIFICATIONS LOGIC
     const alerts = [];
-
     if (activeMonth === currentMonthStr && !isSuspended) {
       if (logs.length === 0) {
-        if (today.getDate() >= 3) {
-          alerts.push({ type: 'danger', msg: '⚠️ Inactive > 3 days' });
-        }
+        if (today.getDate() >= 3) alerts.push({ type: 'danger', msg: `⚠️ Inactive for ${today.getDate()} days` });
       } else {
-        const sortedLogs = [...logs].sort((a,b) => {
-          const dateA = new Date(a.assigned_date || 0).getTime() || 0;
-          const dateB = new Date(b.assigned_date || 0).getTime() || 0;
-          return dateB - dateA;
-        });
-        const lastLogDate = new Date(sortedLogs[0].assigned_date);
-        const timeDiff = today.getTime() - lastLogDate.getTime();
-        if (!isNaN(timeDiff)) {
-          const daysInactive = Math.floor(timeDiff / (1000 * 60 * 60 * 24));
-          if (daysInactive >= 3) {
-            alerts.push({ type: 'danger', msg: `⚠️ Inactive ${daysInactive} days` });
-          }
-        }
+        const sortedLogs = [...logs].sort((a,b) => new Date(b.assigned_date || 0).getTime() - new Date(a.assigned_date || 0).getTime());
+        const daysInactive = Math.floor((today.getTime() - new Date(sortedLogs[0].assigned_date).getTime()) / (1000 * 60 * 60 * 24));
+        if (daysInactive >= 3) alerts.push({ type: 'danger', msg: `⚠️ Inactive for ${daysInactive} days` });
       }
     }
 
-    if (mTotal > 0 && mTotal < 5) {
-      alerts.push({ type: 'warning', msg: '📉 < 5 hrs Logged' });
-    }
+    if (mTotal > 0 && mTotal < 5) alerts.push({ type: 'warning', msg: '📉 Low: Under 5 hrs' });
 
-    const monthNumSafe = parseInt(activeMonth.split("-")[1], 10);
-    if (!isNaN(monthNumSafe) && [3, 6, 9, 12].includes(monthNumSafe) && mTotal > 0 && mTotal < 20) {
-      alerts.push({ type: 'warning', msg: '🕒 < 20 hrs Q-Risk' });
-    }
-
-    accArr.push({ ...acc, logs, wHrs, mTotal, tBase, isBonusMet, cLRate, cRRate, rev, cost, isSuspended, alerts });
+    accArr.push({ ...acc, logs, wHrs, mTotal, tBase, isBonusMet, cLRate, cRRate, rev, cost, isSuspended, alerts, isNoRater });
     return accArr;
   }, []);
 
-  // 2. Filter Team (Search Text)
+  const uniqueClients = ["All", ...new Set(processedTeam.map(acc => (acc.clientName || "General Pool").trim()))].sort();
+
   const filteredTeam = processedTeam.filter(acc => {
-    if (!searchTerm) return true;
     const srch = searchTerm.toLowerCase();
-    return acc.email.toLowerCase().includes(srch) || (acc.clientName && acc.clientName.toLowerCase().includes(srch));
+    const actualLeader = getActualLeader(acc).toLowerCase();
+    
+    const matchesSearch = !searchTerm || 
+           acc.email.toLowerCase().includes(srch) || 
+           (acc.clientName && acc.clientName.toLowerCase().includes(srch)) ||
+           actualLeader.includes(srch);
+           
+    const accClient = (acc.clientName || "General Pool").trim();
+    const matchesClient = selectedClient === "All" || accClient === selectedClient;
+
+    return matchesSearch && matchesClient;
   });
 
-  // 3. Group by Client
   const clientGroups = {};
   filteredTeam.forEach(acc => {
-    const c = (acc.clientName && typeof acc.clientName === 'string' && acc.clientName.trim() !== '') ? acc.clientName.trim() : "General Pool";
-    if (!clientGroups[c]) clientGroups[c] = [];
-    clientGroups[c].push(acc);
+    let groupKey = "";
+    
+    if (isMainAdmin || isCoAdmin) {
+      const cName = (acc.clientName || "").trim().toLowerCase();
+      let leader = getActualLeader(acc);
+
+      const isMyClient = cName === "me" || cName === "internal" || cName === "general pool" || cName === "" || cName === myLeaderName.toLowerCase();
+      const isOtherCoAdminClient = otherCoAdmins.includes(cName);
+      const isExternalClient = !isMyClient && !isOtherCoAdminClient;
+
+      if (leader === "") {
+        if (isMyClient) leader = myLeaderName;
+        else if (isOtherCoAdminClient) leader = acc.clientName;
+        else leader = "UNASSIGNED";
+      }
+
+      const clientLabel = acc.clientName ? acc.clientName.toUpperCase() : "GENERAL";
+      const handlerLabel = leader.toUpperCase();
+
+      if (isMyClient) {
+        groupKey = `1||MY ACCOUNTS||${handlerLabel}`;
+      } else if (isExternalClient) {
+        groupKey = `2||${clientLabel} (EXTERNAL)||${handlerLabel}`;
+      } else if (isOtherCoAdminClient) {
+        groupKey = `3||${clientLabel} (PARTNER)||${handlerLabel}`;
+      } else {
+        groupKey = `4||${clientLabel} (OTHER)||${handlerLabel}`;
+      }
+    } else {
+      const cLabel = acc.clientName ? acc.clientName.toUpperCase() : "GENERAL";
+      groupKey = `0||${cLabel} (MY TEAM)||ME`;
+    }
+
+    if (!clientGroups[groupKey]) clientGroups[groupKey] = [];
+    clientGroups[groupKey].push(acc);
   });
 
-  // 4. Calculate Grand Totals
   let grandHrs = 0, grandLeaderPay = 0, grandRaterPay = 0;
   const grandWkTotal = new Array(numWeeks).fill(0);
   filteredTeam.forEach(acc => {
@@ -230,57 +258,178 @@ export default function RatersPerformance({ user }) {
     acc.wHrs.forEach((h, i) => grandWkTotal[i] += h);
   });
 
-  // --- CSV EXPORT FUNCTION ---
-  const handleExportCSV = () => {
-    let csv = "Client,Account Name,Status,";
-    monthWeeks.forEach(w => csv += `"${w.label} (${w.dateRange})",`);
-    csv += "Total Hrs,Leader Rate,Revenue,Rater Rate,Cost,Alerts\n";
+  // 🚀 NEW SEPARATED LEADER PAYOUTS LOGIC
+  const leaderPayouts = {}; 
+  if (isMainAdmin || isCoAdmin) {
+    filteredTeam.forEach(acc => {
+      const cName = (acc.clientName || "").trim().toLowerCase();
+      
+      // Determine Who FUNDS the account (Owner)
+      let ownerLabel = "EXTERNAL ACCOUNTS";
+      if (cName === "me" || cName === "internal" || cName === "general pool" || cName === "" || cName === myLeaderName.toLowerCase()) {
+        ownerLabel = myLeaderName.toUpperCase();
+      } else if (otherCoAdmins.includes(cName)) {
+        ownerLabel = cName.toUpperCase();
+      }
 
-    Object.keys(clientGroups).sort().forEach(client => {
-      clientGroups[client].forEach(acc => {
-        const stat = acc.isSuspended ? "Frozen" : "Active";
-        let row = `"${client}","${acc.email}","${stat}",`;
-        acc.wHrs.forEach(h => row += `"${h.toFixed(2)}",`);
+      // Determine Who GETS PAID (Leader)
+      let leader = getActualLeader(acc);
+      if (leader === "") {
+        if (ownerLabel === myLeaderName.toUpperCase()) leader = myLeaderName;
+        else if (otherCoAdmins.includes(cName)) leader = cName;
+        else leader = "Direct / Unassigned";
+      }
+      leader = leader.toUpperCase();
+
+      // Build Nested Object: { [Owner]: { [Leader]: { total: X, accounts: [...] } } }
+      if (!leaderPayouts[ownerLabel]) leaderPayouts[ownerLabel] = {};
+      if (!leaderPayouts[ownerLabel][leader]) leaderPayouts[ownerLabel][leader] = { total: 0, accounts: new Set() };
+      
+      leaderPayouts[ownerLabel][leader].total += acc.rev;
+      leaderPayouts[ownerLabel][leader].accounts.add(acc.email ? acc.email.split('@')[0] : "unknown");
+    });
+  }
+
+  const handleExportExcel = () => {
+    const structuredData = {};
+    Object.keys(clientGroups).forEach(key => {
+      const parts = key.split('||');
+      const category = `${parts[0]}||${parts[1]}`;
+      const handler = parts[2];
+      if (!structuredData[category]) structuredData[category] = {};
+      structuredData[category][handler] = clientGroups[key];
+    });
+
+    let tableHTML = `
+      <table border="1" style="font-family: Arial, sans-serif; border-collapse: collapse; width: 100%;">
+        <thead>
+          <tr style="background-color: #0f172a; color: #ffffff; text-align: center; font-weight: bold; font-size: 14px;">
+            <th style="padding: 10px;">Account Name</th>
+            ${(isMainAdmin || isCoAdmin) ? '<th style="padding: 10px;">Leader</th>' : ''}
+            ${monthWeeks.map(w => `<th style="padding: 10px;">${w.label}</th>`).join('')}
+            <th style="padding: 10px;">Total Mnthly</th>
+            ${(isMainAdmin || isCoAdmin) ? '<th style="padding: 10px;">Rev / hr (USD)</th>' : ''}
+            <th style="padding: 10px;">Total Payrate (Leader)</th>
+            <th style="padding: 10px;">Total Payment (Revenue)</th>
+            <th style="padding: 10px;">Rater Payrate</th>
+            <th style="padding: 10px;">Rater Payment (Cost)</th>
+            <th style="padding: 10px;">Alerts</th>
+          </tr>
+        </thead>
+        <tbody>
+    `;
+
+    Object.keys(structuredData).sort().forEach(categoryKey => {
+      const parts = categoryKey.split('||');
+      const sortNum = parts[0];
+      const categoryTitle = parts[1];
+      const isPartnerGroup = sortNum === '3';
+      
+      if (isMainAdmin || isCoAdmin) {
+        tableHTML += `
+          <tr>
+            <td colspan="${totalColumns}" style="background-color: ${isPartnerGroup ? '#fff1f2' : '#f8fafc'}; font-weight: bold; font-size: 16px; padding: 12px; color: ${isPartnerGroup ? '#be123c' : '#0f172a'};">
+              📁 ${sortNum === '0' ? '' : sortNum + ' -'} ${categoryTitle} ${isPartnerGroup ? " (0% PROFIT MARGIN)" : ""}
+            </td>
+          </tr>
+        `;
+      }
+
+      Object.keys(structuredData[categoryKey]).sort().forEach(handler => {
+        const handlerGroup = structuredData[categoryKey][handler];
         
-        const alertStr = acc.alerts.map(a => a.msg).join(" | ");
-        row += `"${acc.mTotal.toFixed(2)}","${acc.cLRate}","${acc.rev}","${acc.cRRate}","${acc.cost}","${alertStr}"\n`;
-        csv += row;
+        if (isMainAdmin || isCoAdmin) {
+          tableHTML += `
+            <tr>
+              <td colspan="${totalColumns}" style="background-color: #ffffff; font-weight: bold; font-size: 13px; padding: 8px; color: #475569;">
+                👤 MANAGED BY: ${handler.toUpperCase()}
+              </td>
+            </tr>
+          `;
+        }
+
+        let cHrs = 0, cLPay = 0, cRPay = 0;
+        const cWk = new Array(numWeeks).fill(0);
+
+        handlerGroup.forEach(acc => {
+          cHrs += acc.mTotal; cLPay += acc.rev; cRPay += acc.cost;
+          acc.wHrs.forEach((h, i) => cWk[i] += h);
+          
+          const stat = acc.isSuspended ? " 🔒" : "";
+          const alertStr = acc.alerts.map(a => a.msg).join(" | ");
+          const raterRateDisplay = acc.isNoRater ? "No Rater" : `₹${acc.cRRate} ${acc.isBonusMet ? '(BONUS)' : ''}`;
+          const raterCostDisplay = acc.isNoRater ? "₹0" : `₹${acc.cost}`;
+
+          const isManager = acc.role === 'leader' || acc.role === 'co-admin';
+          let safeHandler = getActualLeader(acc);
+          if (safeHandler === "") safeHandler = handler;
+          if (safeHandler === "ME") safeHandler = myLeaderName;
+          
+          const actualRater = isManager ? null : (acc.isNoRater ? "No Rater" : (acc.raterName || "Unassigned"));
+
+          tableHTML += `
+            <tr style="text-align: center;">
+              <td style="text-align: left; font-weight: bold; padding: 8px;">
+                ${acc.email}${stat}<br/>
+                <span style="font-size: 10px; color: #64748b;">Client: ${acc.clientName || "General"} ${actualRater ? `| W: ${actualRater}` : ''}</span>
+              </td>
+              ${(isMainAdmin || isCoAdmin) ? `<td>${safeHandler}</td>` : ''}
+              ${acc.wHrs.map(h => `<td style="color: #475569;">${h > 0 ? h.toFixed(2) : "-"}</td>`).join('')}
+              <td style="font-weight: bold; background-color: #fffbeb; color: #d97706;">${acc.mTotal > 0 ? acc.mTotal.toFixed(2) : "-"}</td>
+              ${(isMainAdmin || isCoAdmin) ? `<td style="color: #059669; font-weight: bold;">$${acc.payRateUSD || 0}</td>` : ''}
+              <td>₹${acc.cLRate} ${acc.isBonusMet ? '(BONUS)' : ''}</td>
+              <td style="color: #1d4ed8; font-weight: bold; background-color: #eff6ff;">₹${acc.rev}</td>
+              <td>${raterRateDisplay}</td>
+              <td style="color: #be123c; font-weight: bold; background-color: #fdf2f8;">${raterCostDisplay}</td>
+              <td style="text-align: left; color: #ea580c; font-size: 12px;">${alertStr}</td>
+            </tr>
+          `;
+        });
+
+        const subBg = isPartnerGroup ? "#ffe4e6" : "#eef2ff";
+        tableHTML += `
+          <tr style="background-color: ${subBg}; font-weight: bold; text-align: center;">
+            <td colspan="${(isMainAdmin || isCoAdmin) ? 2 : 1}" style="text-align: right; padding: 8px;">Subtotal:</td>
+            ${cWk.map(h => `<td>${h > 0 ? h.toFixed(2) : "-"}</td>`).join('')}
+            <td style="color: #9a3412;">${cHrs > 0 ? cHrs.toFixed(2) : "-"}</td>
+            ${(isMainAdmin || isCoAdmin) ? `<td></td>` : ''}
+            <td style="color: #1e3a8a;">₹${cLPay}</td>
+            <td></td>
+            <td style="color: #9f1239;">₹${cRPay}</td>
+            <td></td>
+          </tr>
+        `;
       });
     });
 
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-    const link = document.createElement("a");
+    tableHTML += `
+      <tr style="background-color: #0f172a; color: #ffffff; font-weight: bold; text-align: center; font-size: 14px;">
+        <td colspan="${(isMainAdmin || isCoAdmin) ? 2 : 1}" style="text-align: right; padding: 12px;">AGENCY TOTALS:</td>
+        ${grandWkTotal.map(h => `<td>${h > 0 ? h.toFixed(2) : "-"}</td>`).join('')}
+        <td style="color: #fbbf24;">${grandHrs > 0 ? grandHrs.toFixed(2) : "-"}</td>
+        ${(isMainAdmin || isCoAdmin) ? `<td></td>` : ''}
+        <td style="color: #60a5fa;">₹${grandLeaderPay}</td>
+        <td></td>
+        <td style="color: #f87171;">₹${grandRaterPay}</td>
+        <td></td>
+      </tr>
+    </tbody></table>`;
+
+    const template = `<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40"><head><meta charset="utf-8"></head><body>${tableHTML}</body></html>`;
+    const blob = new Blob([template], { type: 'application/vnd.ms-excel' });
     const url = URL.createObjectURL(blob);
-    link.setAttribute("href", url);
-    link.setAttribute("download", `Payroll_Export_${activeMonth}.csv`);
-    link.style.visibility = 'hidden';
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `Payroll_Export_${activeMonth}.xls`;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
   };
 
-  // --- STYLES ---
-  const s = {
-    th: { padding: "12px 10px", backgroundColor: "#f8fafc", color: "#475569", fontWeight: "700", fontSize: "11px", textAlign: "center", borderBottom: "2px solid #e2e8f0", borderRight: "1px solid #f1f5f9" },
-    td: { padding: "12px 10px", borderBottom: "1px solid #f1f5f9", borderRight: "1px solid #f8fafc", fontSize: "13px", color: "#1e293b", textAlign: "center", verticalAlign: "middle" },
-    spacer: { width: "16px", backgroundColor: "#f1f5f9", border: "none" },
-    alertBadge: { padding: "4px 8px", borderRadius: "6px", fontSize: "11px", fontWeight: "700", display: "inline-flex", alignItems: "center", gap: "4px", width: "max-content", border: "1px solid transparent" }
-  };
-
   return (
     <div style={{ padding: "30px", backgroundColor: "#f1f5f9", minHeight: "100vh", fontFamily: "'Inter', sans-serif", boxSizing: "border-box" }}>
-      
-      {/* RENDER MODAL IF CLICKED */}
-      {calendarUser && (
-        <UserCalendarModal 
-          selectedAccount={calendarUser} 
-          initialMonth={activeMonth} 
-          timeData={timeData} 
-          onClose={() => setCalendarUser(null)} 
-        />
-      )}
+      {calendarUser && <UserCalendarModal selectedAccount={calendarUser} initialMonth={activeMonth} timeData={timeData} onClose={() => setCalendarUser(null)} />}
 
-      {/* HEADER & CONTROLS */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginBottom: "25px", flexWrap: "wrap", gap: "15px" }}>
         <div>
           <h1 style={{ margin: 0, fontSize: "28px", fontWeight: "900", color: "#0f172a" }}>Performance Master Ledger</h1>
@@ -290,176 +439,43 @@ export default function RatersPerformance({ user }) {
         </div>
         
         <div style={{ display: "flex", gap: "10px", alignItems: "center", flexWrap: "wrap" }}>
-          <input 
-            type="text" 
-            placeholder="🔍 Search user or client..." 
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-            style={{ padding: "10px 14px", borderRadius: "8px", border: "1px solid #cbd5e1", fontSize: "14px", outline: "none", width: "220px" }}
-          />
-          <input 
-            type="month" 
-            value={selectedMonth} 
-            onChange={(e) => { if (e.target.value) setSelectedMonth(e.target.value); }}
-            style={{ padding: "10px 14px", borderRadius: "8px", border: "1px solid #cbd5e1", fontWeight: "700", outline: "none", cursor: "pointer", backgroundColor: "#fff" }}
-          />
-          <button 
-            onClick={handleExportCSV}
-            style={{ padding: "10px 16px", backgroundColor: "#10b981", color: "white", border: "none", borderRadius: "8px", fontWeight: "bold", cursor: "pointer", fontSize: "14px", boxShadow: "0 2px 4px rgba(16,185,129,0.3)", display: "flex", alignItems: "center", gap: "6px" }}
-          >
-            📥 Export CSV
+          <select value={selectedClient} onChange={(e) => setSelectedClient(e.target.value)} style={{ padding: "10px 14px", borderRadius: "8px", border: "1px solid #cbd5e1", fontSize: "14px", outline: "none", cursor: "pointer", fontWeight: "bold", color: "#1e293b", backgroundColor: "#fff" }}>
+            {uniqueClients.map(client => (
+              <option key={client} value={client}>{client === "All" ? "Filter by Client: All" : client}</option>
+            ))}
+          </select>
+
+          <input type="text" placeholder={(isMainAdmin || isCoAdmin) ? "🔍 Search user, client, or leader..." : "🔍 Search user or client..."} value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} style={{ padding: "10px 14px", borderRadius: "8px", border: "1px solid #cbd5e1", fontSize: "14px", outline: "none", width: "240px" }} />
+          <input type="month" value={selectedMonth} onChange={(e) => { if (e.target.value) setSelectedMonth(e.target.value); }} style={{ padding: "10px 14px", borderRadius: "8px", border: "1px solid #cbd5e1", fontWeight: "700", outline: "none", cursor: "pointer", backgroundColor: "#fff" }} />
+          <button onClick={handleExportExcel} style={{ padding: "10px 16px", backgroundColor: "#10b981", color: "white", border: "none", borderRadius: "8px", fontWeight: "bold", cursor: "pointer", fontSize: "14px", boxShadow: "0 2px 4px rgba(16,185,129,0.3)", display: "flex", alignItems: "center", gap: "6px" }}>
+            📊 Export Excel
           </button>
         </div>
       </div>
 
-      {/* TABLE CARD */}
-      <div style={{ backgroundColor: "#fff", borderRadius: "12px", boxShadow: "0 4px 6px -1px rgba(0,0,0,0.05)", border: "1px solid #e2e8f0", overflowX: "auto" }}>
-        {Object.keys(clientGroups).length === 0 ? (
-          <div style={{ padding: "80px", textAlign: "center", color: "#64748b" }}>
-            <span style={{fontSize: "30px", display: "block", marginBottom: "10px"}}>📭</span>
-            <span style={{fontWeight: "bold", fontSize: "16px"}}>No accounts available for this selection.</span>
-          </div>
-        ) : (
-          <table style={{ width: "100%", borderCollapse: "collapse", whiteSpace: "nowrap" }}>
-            <thead>
-              <tr>
-                <th style={{ ...s.th, textAlign: "left", paddingLeft: "20px" }}>Account Name</th>
-                {monthWeeks.map((w, i) => (
-                  <th key={i} style={s.th}>
-                    <div style={{ fontSize: "12px", color: "#1e293b" }}>{w.label}</div>
-                    <div style={{ fontSize: "9px", color: "#94a3b8", marginTop: "2px", fontWeight: "600" }}>{w.dateRange}</div>
-                  </th>
-                ))}
-                <th style={{ ...s.th, backgroundColor: "#fffbeb", color: "#b45309" }}>Total Mnthly</th>
-                <th style={s.spacer}></th> 
-                <th style={s.th}>Total Payrate<br/><span style={{fontSize: "9px", color: "#94a3b8"}}>(Leader)</span></th>
-                <th style={{ ...s.th, backgroundColor: "#eff6ff", color: "#1d4ed8" }}>Total Payment<br/><span style={{fontSize: "9px"}}>(Revenue)</span></th>
-                <th style={s.th}>Rater Payrate</th>
-                <th style={{ ...s.th, backgroundColor: "#fdf2f8", color: "#be123c" }}>Rater Payment<br/><span style={{fontSize: "9px"}}>(Cost)</span></th>
-                <th style={{ ...s.th, textAlign: "left", paddingLeft: "15px", backgroundColor: "#f8fafc", width: "180px" }}>Notifications</th>
-              </tr>
-            </thead>
-            <tbody>
-              {Object.keys(clientGroups).sort().map(client => {
-                let cHrs = 0, cLPay = 0, cRPay = 0;
-                const cWk = new Array(numWeeks).fill(0);
-
-                return (
-                  <React.Fragment key={client}>
-                    <tr>
-                      <td colSpan={totalColumns} style={{ backgroundColor: "#f1f5f9", padding: "12px 20px", fontWeight: "800", color: "#334155", fontSize: "12px", letterSpacing: "0.5px", borderBottom: "1px solid #cbd5e1" }}>
-                        💼 {client.toUpperCase()}
-                      </td>
-                    </tr>
-
-                    {clientGroups[client].map((acc) => {
-                      cHrs += acc.mTotal; cLPay += acc.rev; cRPay += acc.cost;
-                      acc.wHrs.forEach((h, i) => cWk[i] += h);
-
-                      const safeKey = acc.id || acc.email || Math.random().toString();
-
-                      return (
-                        <tr 
-                          key={safeKey}
-                          onClick={() => setCalendarUser(acc)}
-                          style={{ backgroundColor: acc.isSuspended ? "#fff1f2" : "#fff", cursor: "pointer", transition: "0.2s" }} 
-                          onMouseOver={(e) => !acc.isSuspended && (e.currentTarget.style.backgroundColor = "#f8fafc")} 
-                          onMouseOut={(e) => !acc.isSuspended && (e.currentTarget.style.backgroundColor = "#fff")}
-                          title="Click to open full monthly calendar details"
-                        >
-                          <td style={{ ...s.td, textAlign: "left", paddingLeft: "20px", color: acc.isSuspended ? "#94a3b8" : "#0f172a", fontWeight: "600" }}>
-                            <div style={{display: "flex", alignItems: "center", gap: "8px"}}>
-                              <span style={{fontSize: "14px", opacity: "0.6"}}>📅</span>
-                              {acc.email || "Unknown Account"} {acc.isSuspended && "🔒"}
-                            </div>
-                          </td>
-                          {acc.wHrs.map((h, i) => (
-                            <td key={i} style={{ ...s.td, color: h === 0 ? "#cbd5e1" : "#475569", fontWeight: h > 0 ? "600" : "400" }}>
-                              {formatTime(h)}
-                            </td>
-                          ))}
-                          <td style={{ ...s.td, backgroundColor: "#fffbeb", fontWeight: "800", color: acc.mTotal === 0 ? "#94a3b8" : "#d97706" }}>
-                            {acc.mTotal > 0 ? Number(acc.mTotal).toFixed(2) : "-"}
-                          </td>
-                          <td style={s.spacer}></td>
-                          
-                          {/* LEADER RATE WITH BONUS BADGE */}
-                          <td style={{ ...s.td, backgroundColor: acc.isBonusMet ? "#ecfdf5" : "transparent" }}>
-                            {acc.isBonusMet ? (
-                              <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "2px" }}>
-                                <span style={{ color: "#059669", fontWeight: "900", fontSize: "14px" }}>₹{acc.cLRate}</span>
-                                <span style={{ fontSize: "9px", backgroundColor: "#10b981", color: "#fff", padding: "2px 6px", borderRadius: "4px", fontWeight: "bold" }}>🎯 BONUS ACTIVE</span>
-                              </div>
-                            ) : (
-                              <span style={{ color: "#64748b", fontWeight: "600" }}>₹{acc.cLRate}</span>
-                            )}
-                          </td>
-                          <td style={{ ...s.td, backgroundColor: "#eff6ff", color: "#1d4ed8", fontWeight: "800", fontSize: "14px" }}>
-                            ₹{formatMoney(acc.rev, 0)}
-                          </td>
-
-                          {/* RATER RATE WITH BONUS BADGE */}
-                          <td style={{ ...s.td, backgroundColor: acc.isBonusMet ? "#ecfdf5" : "transparent" }}>
-                            {acc.isBonusMet ? (
-                              <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "2px" }}>
-                                <span style={{ color: "#059669", fontWeight: "900", fontSize: "14px" }}>₹{acc.cRRate}</span>
-                                <span style={{ fontSize: "9px", backgroundColor: "#10b981", color: "#fff", padding: "2px 6px", borderRadius: "4px", fontWeight: "bold" }}>🎯 BONUS ACTIVE</span>
-                              </div>
-                            ) : (
-                              <span style={{ color: "#64748b", fontWeight: "600" }}>₹{acc.cRRate}</span>
-                            )}
-                          </td>
-                          <td style={{ ...s.td, backgroundColor: acc.isBonusMet ? "#fdf2f8" : "#fff", color: "#be123c", fontWeight: "800", fontSize: "14px" }}>
-                            ₹{formatMoney(acc.cost, 2)}
-                          </td>
-                          
-                          {/* STRICT NOTIFICATIONS */}
-                          <td style={{ ...s.td, textAlign: "left", paddingLeft: "15px", backgroundColor: "#f8fafc", borderRight: "none" }}>
-                            <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-                              {acc.isSuspended && <span style={{ ...s.alertBadge, backgroundColor: "#f1f5f9", color: "#64748b", border: "1px solid #cbd5e1" }}>❄️ Frozen</span>}
-                              {acc.alerts.length > 0 ? acc.alerts.map((a, i) => (
-                                <span key={i} style={{ ...s.alertBadge, backgroundColor: a.type === 'danger' ? "#fef2f2" : "#fff7ed", color: a.type === 'danger' ? "#e11d48" : "#ea580c", border: `1px solid ${a.type === 'danger' ? '#fecdd3' : '#fed7aa'}` }}>
-                                  {a.msg}
-                                </span>
-                              )) : (!acc.isSuspended && <span style={{ fontSize: "11px", color: "#10b981", fontWeight: "600" }}>✔️ On Track</span>)}
-                            </div>
-                          </td>
-                        </tr>
-                      );
-                    })}
-
-                    {/* CLIENT SUBTOTAL ROW */}
-                    <tr style={{ backgroundColor: "#f8fafc", borderTop: "2px solid #e2e8f0" }}>
-                      <td style={{ ...s.td, textAlign: "right", paddingRight: "20px", fontWeight: "800", color: "#475569" }}>Subtotal:</td>
-                      {cWk.map((h, i) => <td key={i} style={{ ...s.td, fontWeight: "700", color: "#64748b" }}>{formatTime(h)}</td>)}
-                      <td style={{ ...s.td, fontWeight: "800", color: "#b45309" }}>{cHrs > 0 ? Number(cHrs).toFixed(2) : "-"}</td>
-                      <td style={s.spacer}></td>
-                      <td style={s.td}></td>
-                      <td style={{ ...s.td, fontWeight: "800", color: "#1d4ed8" }}>₹{formatMoney(cLPay, 0)}</td>
-                      <td style={s.td}></td>
-                      <td style={{ ...s.td, fontWeight: "800", color: "#be123c" }}>₹{formatMoney(cRPay, 2)}</td>
-                      <td style={{ ...s.td, borderRight: "none" }}></td>
-                    </tr>
-                    <tr style={{ height: "8px" }}><td colSpan={totalColumns} style={{ border: "none" }}></td></tr>
-                  </React.Fragment>
-                );
-              })}
-
-              <tr style={{ backgroundColor: "#0f172a" }}>
-                <td style={{ padding: "20px", textAlign: "right", fontWeight: "900", color: "#fff", fontSize: "14px", border: "none" }}>FILTERED TOTALS:</td>
-                {grandWkTotal.map((h, i) => <td key={i} style={{ padding: "20px 10px", textAlign: "center", color: "#94a3b8", fontWeight: "700", border: "none" }}>{formatTime(h)}</td>)}
-                <td style={{ padding: "20px 10px", textAlign: "center", color: "#fbbf24", fontWeight: "900", fontSize: "15px", border: "none" }}>{grandHrs > 0 ? Number(grandHrs).toFixed(2) : "-"}</td>
-                <td style={{ backgroundColor: "#0f172a", border: "none" }}></td>
-                <td style={{ border: "none" }}></td>
-                <td style={{ padding: "20px 10px", textAlign: "center", color: "#60a5fa", fontWeight: "900", fontSize: "16px", border: "none" }}>₹{formatMoney(grandLeaderPay, 0)}</td>
-                <td style={{ border: "none" }}></td>
-                <td style={{ padding: "20px 10px", textAlign: "center", color: "#f87171", fontWeight: "900", fontSize: "16px", border: "none" }}>₹{formatMoney(grandRaterPay, 2)}</td>
-                <td style={{ border: "none" }}></td>
-              </tr>
-            </tbody>
-          </table>
-        )}
+      <div style={{ backgroundColor: "transparent", borderRadius: "12px", overflowX: "auto" }}>
+        <PerformanceTable 
+          isCoAdminView={isMainAdmin || isCoAdmin}
+          showLeaderCol={isMainAdmin || isCoAdmin}
+          clientGroups={clientGroups} 
+          monthWeeks={monthWeeks} 
+          numWeeks={numWeeks} 
+          totalColumns={totalColumns} 
+          grandWkTotal={grandWkTotal} 
+          grandHrs={grandHrs} 
+          grandLeaderPay={grandLeaderPay} 
+          grandRaterPay={grandRaterPay} 
+          setCalendarUser={setCalendarUser} 
+        />
       </div>
+
+      {/* Renders the newly upgraded separated payouts logic */}
+      <LeaderPayouts 
+        leaderPayouts={leaderPayouts} 
+        isMainAdmin={isMainAdmin} 
+        isCoAdmin={isCoAdmin} 
+      />
+
     </div>
   );
 }

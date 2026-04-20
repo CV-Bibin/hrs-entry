@@ -10,12 +10,12 @@ export default function TaskTimer() {
   const [runningTotalMs, setRunningTotalMs] = useState(0);
   
   const [isRunning, setIsRunning] = useState(false);
-  const [autoLoop, setAutoLoop] = useState(false);
+  const [autoLoop, setAutoLoop] = useState(true);
   const [loopCount, setLoopCount] = useState(1);
   
   const [sessionId, setSessionId] = useState(Date.now());
   
-  // 🚀 UI States: Initially Minimized!
+  // UI States
   const [isMinimized, setIsMinimized] = useState(true); 
   const [showSettings, setShowSettings] = useState(false);
   const [isHovered, setIsHovered] = useState(false); 
@@ -37,6 +37,9 @@ export default function TaskTimer() {
   const draggingRef = useRef(false);
   const offsetRef = useRef({ x: 0, y: 0 });
   const audioCtxRef = useRef(null);
+  
+  // 🚀 NEW: Store the original browser tab title
+  const originalTitleRef = useRef(document.title);
 
   // 🔊 Clear 1.5 Second Beep Alert
   const playAlertSound = () => {
@@ -73,9 +76,16 @@ export default function TaskTimer() {
       const currentTarget = `${String(targetMin).padStart(2, '0')}:${String(targetSec).padStart(2, '0')}`;
       const nowTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
       
+      const billableDurationMs = loopCount * targetMs;
+
       if (prev.length > 0 && prev[0].sessionId === sessionId && prev[0].target === currentTarget) {
         const updatedHistory = [...prev];
-        updatedHistory[0] = { ...updatedHistory[0], loop: loopCount, time: nowTime };
+        updatedHistory[0] = { 
+          ...updatedHistory[0], 
+          loop: loopCount, 
+          time: nowTime,
+          durationMs: billableDurationMs 
+        };
         return updatedHistory;
       } else {
         const newRecord = {
@@ -83,7 +93,8 @@ export default function TaskTimer() {
           sessionId: sessionId,
           time: nowTime,
           loop: loopCount,
-          target: currentTarget
+          target: currentTarget,
+          durationMs: billableDurationMs
         };
         return [newRecord, ...prev].slice(0, 50); 
       }
@@ -209,12 +220,39 @@ export default function TaskTimer() {
   const runM = Math.floor((runTotalSec % 3600) / 60);
   const runS = runTotalSec % 60;
 
+  const formatDuration = (ms) => {
+    if (!ms) return "0s";
+    const totalSec = Math.floor(ms / 1000);
+    const h = Math.floor(totalSec / 3600);
+    const m = Math.floor((totalSec % 3600) / 60);
+    const s = totalSec % 60;
+    if (h > 0) return `${h}h ${m}m ${s}s`;
+    if (m > 0) return `${m}m ${s}s`;
+    return `${s}s`;
+  };
+
+  // 🚀 NEW: Update Browser Tab Title
+  useEffect(() => {
+    const formattedTime = `${String(dispM).padStart(2, '0')}:${String(dispS).padStart(2, '0')}`;
+    
+    if (isRunning) {
+      document.title = `⏳ ${formattedTime} | L:${loopCount}`;
+    } else if (targetMs > 0 && timeLeftMs < targetMs) {
+      document.title = `⏸️ ${formattedTime} (Paused)`;
+    } else {
+      document.title = originalTitleRef.current; // Restore original title when stopped
+    }
+
+    return () => {
+      document.title = originalTitleRef.current; // Safety cleanup on unmount
+    };
+  }, [isRunning, dispM, dispS, loopCount, targetMs, timeLeftMs]);
+
   const radius = 85;
   const circumference = 2 * Math.PI * radius;
   const percent = targetMs > 0 ? (timeLeftMs / targetMs) : 0;
   const strokeDashoffset = circumference - (percent * circumference);
 
-  // Controls UI Visibility logic
   const showFullUI = isHovered || isFlipped;
 
   // =====================================
@@ -302,7 +340,7 @@ export default function TaskTimer() {
 
           <div style={{ padding: showFullUI ? "10px 20px 30px" : "10px 20px 10px", display: "flex", flexDirection: "column", gap: "10px", alignItems: "center", transition: "padding 0.3s ease" }}>
             
-            {/* 🚀 CIRCULAR TIMER (ALWAYS VISIBLE) */}
+            {/* CIRCULAR TIMER */}
             <div style={{ 
               position: "relative", width: "200px", height: "200px", display: "flex", justifyContent: "center", alignItems: "center",
               backgroundColor: showFullUI ? "transparent" : "rgba(248, 250, 252, 0.95)",
@@ -325,7 +363,7 @@ export default function TaskTimer() {
               </div>
             </div>
 
-            {/* 🚀 HIDDEN SECTION (Fades out when not hovering) */}
+            {/* HIDDEN SECTION (Fades out when not hovering) */}
             <div style={{
               display: "flex", flexDirection: "column", gap: "10px", width: "100%", alignItems: "center",
               opacity: showFullUI ? 1 : 0,
@@ -428,13 +466,19 @@ export default function TaskTimer() {
               <div style={{ textAlign: "center", color: "#94a3b8", fontSize: "13px", marginTop: "40px", fontStyle: "italic" }}>No completed sessions.</div>
             ) : (
               history.map((record) => (
-                <div key={record.id} style={{ backgroundColor: "#fff", padding: "10px", borderRadius: "8px", border: "1px solid #e2e8f0", fontSize: "12px", display: "flex", justifyContent: "space-between", alignItems: "center", boxShadow: "0 2px 4px rgba(0,0,0,0.02)" }}>
+                <div key={record.id} style={{ backgroundColor: "#fff", padding: "12px", borderRadius: "8px", border: "1px solid #e2e8f0", fontSize: "12px", display: "flex", justifyContent: "space-between", alignItems: "center", boxShadow: "0 2px 4px rgba(0,0,0,0.02)" }}>
                   <div>
-                    <strong style={{ color: "#475569", fontSize: "13px" }}>Completed: {record.loop} {record.loop === 1 ? 'Loop' : 'Loops'}</strong>
-                    <div style={{ color: "#94a3b8", fontSize: "10px", marginTop: "4px" }}>Last active: {record.time}</div>
+                    <strong style={{ color: "#475569", fontSize: "14px" }}>Completed: {record.loop} {record.loop === 1 ? 'Loop' : 'Loops'}</strong>
+                    
+                    <div style={{ color: "#6254a3", fontSize: "12px", marginTop: "4px", fontWeight: "700", display: "flex", alignItems: "center", gap: "4px" }}>
+                      <span>⏳</span> Time: {formatDuration(record.durationMs)}
+                    </div>
+                    
+                    <div style={{ color: "#94a3b8", fontSize: "10px", marginTop: "6px" }}>Last active: {record.time}</div>
                   </div>
-                  <div style={{ fontWeight: "bold", color: "#6254a3", backgroundColor: "#f3e8ff", border: "1px solid #d8b4fe", padding: "4px 8px", borderRadius: "6px" }}>
-                    {record.target} AET
+                  <div style={{ fontWeight: "bold", color: "#059669", backgroundColor: "#ecfdf5", border: "1px solid #a7f3d0", padding: "6px 10px", borderRadius: "6px", textAlign: "center" }}>
+                    {record.target}
+                    <div style={{ fontSize: "9px", color: "#10b981", marginTop: "2px" }}>AET</div>
                   </div>
                 </div>
               ))

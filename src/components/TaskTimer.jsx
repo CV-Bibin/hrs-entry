@@ -13,16 +13,15 @@ export default function TaskTimer() {
   const [autoLoop, setAutoLoop] = useState(false);
   const [loopCount, setLoopCount] = useState(1);
   
-  // 🚀 NEW: Unique Session ID to group history entries
   const [sessionId, setSessionId] = useState(Date.now());
   
-  // UI States
-  const [isMinimized, setIsMinimized] = useState(false);
+  // 🚀 UI States: Initially Minimized!
+  const [isMinimized, setIsMinimized] = useState(true); 
   const [showSettings, setShowSettings] = useState(false);
   const [isHovered, setIsHovered] = useState(false); 
   const [isFlipped, setIsFlipped] = useState(false);
   
-  // History State (Persisted to localStorage)
+  // History State
   const [history, setHistory] = useState(() => {
     const saved = localStorage.getItem('taskTimerHistory');
     return saved ? JSON.parse(saved) : [];
@@ -68,19 +67,17 @@ export default function TaskTimer() {
     }
   };
 
-  // 📝 🚀 SMART HISTORY SAVER: Groups identical loops into one session card
+  // 📝 SMART HISTORY SAVER
   const saveToHistory = () => {
     setHistory(prev => {
       const currentTarget = `${String(targetMin).padStart(2, '0')}:${String(targetSec).padStart(2, '0')}`;
       const nowTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
       
-      // If the top history item belongs to the current session, update its loop count
       if (prev.length > 0 && prev[0].sessionId === sessionId && prev[0].target === currentTarget) {
         const updatedHistory = [...prev];
         updatedHistory[0] = { ...updatedHistory[0], loop: loopCount, time: nowTime };
         return updatedHistory;
       } else {
-        // Otherwise, create a brand new session card
         const newRecord = {
           id: Date.now(),
           sessionId: sessionId,
@@ -88,12 +85,12 @@ export default function TaskTimer() {
           loop: loopCount,
           target: currentTarget
         };
-        return [newRecord, ...prev].slice(0, 50); // Keep last 50 sessions
+        return [newRecord, ...prev].slice(0, 50); 
       }
     });
   };
 
-  // ⏱️ Master Bulletproof Timer Engine
+  // ⏱️ Master Timer Engine
   useEffect(() => {
     if (!isRunning) return;
 
@@ -179,16 +176,14 @@ export default function TaskTimer() {
     setTimeLeftMs(targetMs);
   };
 
-  // 🚀 Resets the timer AND breaks the history session
   const handleFullSessionReset = () => {
     setIsRunning(false);
     setTimeLeftMs(targetMs);
     setRunningTotalMs(0);
     setLoopCount(1);
-    setSessionId(Date.now()); // Breaks the session to start a new history block
+    setSessionId(Date.now()); 
   };
 
-  // 🚀 Handles changing the target time and forces a session split
   const handleTargetChange = (type, val) => {
     let newMin = targetMin;
     let newSec = targetSec;
@@ -201,7 +196,7 @@ export default function TaskTimer() {
     setTimeLeftMs(newTargetMs);
     setRunningTotalMs(0);
     setLoopCount(1);
-    setSessionId(Date.now()); // Break session because AET changed
+    setSessionId(Date.now()); 
   };
 
   // 📝 Formatters
@@ -219,6 +214,9 @@ export default function TaskTimer() {
   const percent = targetMs > 0 ? (timeLeftMs / targetMs) : 0;
   const strokeDashoffset = circumference - (percent * circumference);
 
+  // Controls UI Visibility logic
+  const showFullUI = isHovered || isFlipped;
+
   // =====================================
   // 🚀 MINIMIZED VIEW
   // =====================================
@@ -234,7 +232,7 @@ export default function TaskTimer() {
           borderRadius: "30px", cursor: "grab", boxShadow: "0 4px 10px rgba(0,0,0,0.1)", 
           display: "flex", alignItems: "center", gap: "15px", fontWeight: "600", border: "1px solid #cbd5e1",
           userSelect: "none", fontFamily: "'Segoe UI', Tahoma, Geneva, Verdana, sans-serif",
-          opacity: isHovered ? 1 : 0.4, 
+          opacity: isHovered ? 1 : 0.6, 
           transition: "opacity 0.3s ease"
         }}
       >
@@ -255,7 +253,7 @@ export default function TaskTimer() {
   }
 
   // =====================================
-  // 🚀 MAIN VIEW (3D Flipping Card)
+  // 🚀 MAIN VIEW (Floating Clock -> 3D Card)
   // =====================================
   return (
     <div 
@@ -264,8 +262,6 @@ export default function TaskTimer() {
       style={{ 
         position: "fixed", top: position.y, left: position.x, zIndex: 9999,
         fontFamily: "'Segoe UI', Tahoma, Geneva, Verdana, sans-serif",
-        opacity: isHovered ? 1 : 0.4, 
-        transition: "opacity 0.3s ease",
         perspective: "1000px" 
       }}
     >
@@ -283,11 +279,19 @@ export default function TaskTimer() {
         <div style={{ 
           backfaceVisibility: "hidden", 
           WebkitBackfaceVisibility: "hidden",
-          backgroundColor: "#e8eaed", borderRadius: "24px", boxShadow: "0 20px 40px rgba(0,0,0,0.15)", border: "1px solid #d1d5db", width: "100%" 
+          backgroundColor: showFullUI ? "#e8eaed" : "transparent", 
+          borderRadius: "24px", 
+          boxShadow: showFullUI ? "0 20px 40px rgba(0,0,0,0.15)" : "none", 
+          border: showFullUI ? "1px solid #d1d5db" : "1px solid transparent", 
+          width: "100%",
+          transition: "all 0.3s ease"
         }}>
           
           {/* HEADER */}
-          <div onMouseDown={handleMouseDown} style={{ padding: "12px 16px", display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "grab", userSelect: "none" }}>
+          <div onMouseDown={handleMouseDown} style={{ 
+            padding: "12px 16px", display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "grab", userSelect: "none",
+            opacity: showFullUI ? 1 : 0, transition: "opacity 0.3s ease"
+          }}>
             <span style={{ fontSize: "10px", fontWeight: "800", color: "#94a3b8", letterSpacing: "1px" }}>≡ DRAG</span>
             <div style={{ display: "flex", gap: "12px", alignItems: "center" }}>
               <button onClick={() => setIsFlipped(true)} style={{ background: "transparent", color: "#64748b", border: "none", cursor: "pointer", fontSize: "16px", padding: 0 }} title="History">📜</button>
@@ -296,10 +300,16 @@ export default function TaskTimer() {
             </div>
           </div>
 
-          <div style={{ padding: "10px 20px 30px", display: "flex", flexDirection: "column", gap: "10px", alignItems: "center" }}>
+          <div style={{ padding: showFullUI ? "10px 20px 30px" : "10px 20px 10px", display: "flex", flexDirection: "column", gap: "10px", alignItems: "center", transition: "padding 0.3s ease" }}>
             
-            {/* CIRCULAR TIMER */}
-            <div style={{ position: "relative", width: "200px", height: "200px", display: "flex", justifyContent: "center", alignItems: "center" }}>
+            {/* 🚀 CIRCULAR TIMER (ALWAYS VISIBLE) */}
+            <div style={{ 
+              position: "relative", width: "200px", height: "200px", display: "flex", justifyContent: "center", alignItems: "center",
+              backgroundColor: showFullUI ? "transparent" : "rgba(248, 250, 252, 0.95)",
+              borderRadius: "50%",
+              boxShadow: showFullUI ? "none" : "0 10px 30px rgba(0,0,0,0.15)",
+              transition: "all 0.3s ease"
+            }}>
               <svg width="200" height="200" viewBox="0 0 200 200" style={{ position: "absolute", top: 0, left: 0, transform: "rotate(-90deg)" }}>
                 <defs>
                   <linearGradient id="timerGradient" x1="100%" y1="0%" x2="0%" y2="100%">
@@ -307,7 +317,7 @@ export default function TaskTimer() {
                     <stop offset="100%" stopColor="#42b883" />
                   </linearGradient>
                 </defs>
-                <circle cx="100" cy="100" r={radius} stroke="#d1d5db" strokeWidth="6" fill="none" />
+                <circle cx="100" cy="100" r={radius} stroke={showFullUI ? "#d1d5db" : "#e2e8f0"} strokeWidth="6" fill="none" style={{ transition: "stroke 0.3s ease" }} />
                 <circle cx="100" cy="100" r={radius} stroke="url(#timerGradient)" strokeWidth="10" fill="none" strokeDasharray={circumference} strokeDashoffset={strokeDashoffset} strokeLinecap="round" style={{ transition: "stroke-dashoffset 0.1s linear" }} />
               </svg>
               <div style={{ fontSize: "42px", fontWeight: "300", color: "#334155", letterSpacing: "1px", position: "relative", zIndex: 1 }}>
@@ -315,74 +325,80 @@ export default function TaskTimer() {
               </div>
             </div>
 
-            {/* LOOP COUNTER */}
-            <div style={{ display: "flex", alignItems: "center", gap: "8px", color: "#94a3b8", fontSize: "14px", fontWeight: "500", marginTop: "5px", marginBottom: "15px" }}>
-              <span>🔁</span> Loop: <strong style={{ color: "#6b21a8" }}>{loopCount}</strong>
-            </div>
-
-            {/* CONTROLS */}
-            <div style={{ display: "flex", gap: "15px", width: "100%", justifyContent: "center", alignItems: "center" }}>
+            {/* 🚀 HIDDEN SECTION (Fades out when not hovering) */}
+            <div style={{
+              display: "flex", flexDirection: "column", gap: "10px", width: "100%", alignItems: "center",
+              opacity: showFullUI ? 1 : 0,
+              pointerEvents: showFullUI ? "auto" : "none",
+              transition: "opacity 0.3s ease"
+            }}>
               
-              {/* PLAY / PAUSE */}
-              {!isRunning ? (
-                <button 
-                  disabled={targetMs === 0}
-                  onClick={handleStart} 
-                  style={{ width: "45px", height: "45px", borderRadius: "50%", border: "2px solid", borderColor: targetMs === 0 ? "#cbd5e1" : "#5e4b9c", backgroundColor: "transparent", color: targetMs === 0 ? "#cbd5e1" : "#5e4b9c", fontSize: "16px", display: "flex", justifyContent: "center", alignItems: "center", cursor: targetMs === 0 ? "not-allowed" : "pointer", transition: "0.2s" }}
-                >▶</button>
-              ) : (
-                <button 
-                  onClick={handlePause} 
-                  style={{ width: "45px", height: "45px", borderRadius: "50%", border: "2px solid #5e4b9c", backgroundColor: "transparent", color: "#5e4b9c", fontSize: "16px", display: "flex", justifyContent: "center", alignItems: "center", cursor: "pointer", transition: "0.2s" }}
-                >⏸</button>
-              )}
-              
-              {/* 🚀 DYNAMIC SUBMIT / STOP BUTTON */}
-              {autoLoop ? (
-                <button 
-                  onClick={handleStopReset} 
-                  style={{ flex: 1, padding: "12px 20px", backgroundColor: "#ef4444", color: "white", border: "none", borderRadius: "30px", fontWeight: "600", cursor: "pointer", fontSize: "15px", boxShadow: "0 4px 10px rgba(239,68,68,0.3)", transition: "0.2s", display: "flex", justifyContent: "center", alignItems: "center", gap: "6px" }}
-                >
-                  <span style={{ fontSize: "12px" }}>⏹</span> Stop Loop
-                </button>
-              ) : (
-                <button 
-                  onClick={handleManualSubmit} 
-                  style={{ flex: 1, padding: "12px 20px", backgroundColor: "#6254a3", color: "white", border: "none", borderRadius: "30px", fontWeight: "600", cursor: "pointer", fontSize: "15px", boxShadow: "0 4px 10px rgba(94,75,156,0.3)", transition: "0.2s", display: "flex", justifyContent: "center", alignItems: "center", gap: "6px" }}
-                >
-                  <span style={{ fontSize: "12px" }}>■</span> Submit Next
-                </button>
-              )}
+              {/* LOOP COUNTER */}
+              <div style={{ display: "flex", alignItems: "center", gap: "8px", color: "#94a3b8", fontSize: "14px", fontWeight: "500", marginTop: "5px", marginBottom: "15px" }}>
+                <span>🔁</span> Loop: <strong style={{ color: "#6b21a8" }}>{loopCount}</strong>
+              </div>
 
-              {/* RESET */}
-              <button 
-                onClick={handleFullSessionReset} 
-                title="Reset Session" 
-                style={{ width: "45px", height: "45px", borderRadius: "50%", border: "2px solid #5e4b9c", backgroundColor: "transparent", color: "#5e4b9c", fontSize: "20px", display: "flex", justifyContent: "center", alignItems: "center", cursor: "pointer", transition: "0.2s" }}
-              >⟳</button>
-            </div>
+              {/* CONTROLS */}
+              <div style={{ display: "flex", gap: "15px", width: "100%", justifyContent: "center", alignItems: "center" }}>
+                
+                {!isRunning ? (
+                  <button 
+                    disabled={targetMs === 0}
+                    onClick={handleStart} 
+                    style={{ width: "45px", height: "45px", borderRadius: "50%", border: "2px solid", borderColor: targetMs === 0 ? "#cbd5e1" : "#5e4b9c", backgroundColor: "transparent", color: targetMs === 0 ? "#cbd5e1" : "#5e4b9c", fontSize: "16px", display: "flex", justifyContent: "center", alignItems: "center", cursor: targetMs === 0 ? "not-allowed" : "pointer", transition: "0.2s" }}
+                  >▶</button>
+                ) : (
+                  <button 
+                    onClick={handlePause} 
+                    style={{ width: "45px", height: "45px", borderRadius: "50%", border: "2px solid #5e4b9c", backgroundColor: "transparent", color: "#5e4b9c", fontSize: "16px", display: "flex", justifyContent: "center", alignItems: "center", cursor: "pointer", transition: "0.2s" }}
+                  >⏸</button>
+                )}
+                
+                {autoLoop ? (
+                  <button 
+                    onClick={handleStopReset} 
+                    style={{ flex: 1, padding: "12px 20px", backgroundColor: "#ef4444", color: "white", border: "none", borderRadius: "30px", fontWeight: "600", cursor: "pointer", fontSize: "15px", boxShadow: "0 4px 10px rgba(239,68,68,0.3)", transition: "0.2s", display: "flex", justifyContent: "center", alignItems: "center", gap: "6px" }}
+                  >
+                    <span style={{ fontSize: "12px" }}>⏹</span> Stop Loop
+                  </button>
+                ) : (
+                  <button 
+                    onClick={handleManualSubmit} 
+                    style={{ flex: 1, padding: "12px 20px", backgroundColor: "#6254a3", color: "white", border: "none", borderRadius: "30px", fontWeight: "600", cursor: "pointer", fontSize: "15px", boxShadow: "0 4px 10px rgba(94,75,156,0.3)", transition: "0.2s", display: "flex", justifyContent: "center", alignItems: "center", gap: "6px" }}
+                  >
+                    <span style={{ fontSize: "12px" }}>■</span> Submit Next
+                  </button>
+                )}
 
-            {/* SETTINGS DRAWER */}
-            {showSettings && (
-              <div style={{ width: "100%", marginTop: "20px", padding: "15px", backgroundColor: "#f1f5f9", border: "1px solid #cbd5e1", borderRadius: "12px", boxSizing: "border-box" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
-                  <span style={{ fontSize: "13px", fontWeight: "600", color: "#475569" }}>Target (AET):</span>
-                  <div style={{ display: "flex", gap: "5px", alignItems: "center" }}>
-                    <input type="number" min="0" value={targetMin} onChange={e => handleTargetChange('min', e.target.value)} style={{ width: "35px", padding: "4px", textAlign: "center", border: "1px solid #cbd5e1", borderRadius: "4px", fontSize: "13px" }} /> <span style={{fontWeight:"600", fontSize:"12px", color: "#64748b"}}>m</span>
-                    <input type="number" min="0" max="59" value={targetSec} onChange={e => handleTargetChange('sec', e.target.value)} style={{ width: "35px", padding: "4px", textAlign: "center", border: "1px solid #cbd5e1", borderRadius: "4px", fontSize: "13px" }} /> <span style={{fontWeight:"600", fontSize:"12px", color: "#64748b"}}>s</span>
+                <button 
+                  onClick={handleFullSessionReset} 
+                  title="Reset Session" 
+                  style={{ width: "45px", height: "45px", borderRadius: "50%", border: "2px solid #5e4b9c", backgroundColor: "transparent", color: "#5e4b9c", fontSize: "20px", display: "flex", justifyContent: "center", alignItems: "center", cursor: "pointer", transition: "0.2s" }}
+                >⟳</button>
+              </div>
+
+              {/* SETTINGS DRAWER */}
+              {showSettings && (
+                <div style={{ width: "100%", marginTop: "20px", padding: "15px", backgroundColor: "#f1f5f9", border: "1px solid #cbd5e1", borderRadius: "12px", boxSizing: "border-box" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
+                    <span style={{ fontSize: "13px", fontWeight: "600", color: "#475569" }}>Target (AET):</span>
+                    <div style={{ display: "flex", gap: "5px", alignItems: "center" }}>
+                      <input type="number" min="0" value={targetMin} onChange={e => handleTargetChange('min', e.target.value)} style={{ width: "35px", padding: "4px", textAlign: "center", border: "1px solid #cbd5e1", borderRadius: "4px", fontSize: "13px" }} /> <span style={{fontWeight:"600", fontSize:"12px", color: "#64748b"}}>m</span>
+                      <input type="number" min="0" max="59" value={targetSec} onChange={e => handleTargetChange('sec', e.target.value)} style={{ width: "35px", padding: "4px", textAlign: "center", border: "1px solid #cbd5e1", borderRadius: "4px", fontSize: "13px" }} /> <span style={{fontWeight:"600", fontSize:"12px", color: "#64748b"}}>s</span>
+                    </div>
+                  </div>
+                  
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" }}>
+                    <span style={{ fontSize: "13px", fontWeight: "600", color: "#475569" }}>Auto-Loop at Zero:</span>
+                    <input type="checkbox" checked={autoLoop} onChange={(e) => setAutoLoop(e.target.checked)} style={{ transform: "scale(1.2)", cursor: "pointer", accentColor: "#6254a3" }} />
+                  </div>
+
+                  <div style={{ textAlign: "center", fontSize: "11px", color: "#94a3b8", fontWeight: "600", marginTop: "15px", borderTop: "1px solid #e2e8f0", paddingTop: "10px" }}>
+                    Active Session: {String(runH).padStart(2, '0')}:{String(runM).padStart(2, '0')}:{String(runS).padStart(2, '0')}
                   </div>
                 </div>
-                
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" }}>
-                  <span style={{ fontSize: "13px", fontWeight: "600", color: "#475569" }}>Auto-Loop at Zero:</span>
-                  <input type="checkbox" checked={autoLoop} onChange={(e) => setAutoLoop(e.target.checked)} style={{ transform: "scale(1.2)", cursor: "pointer", accentColor: "#6254a3" }} />
-                </div>
-
-                <div style={{ textAlign: "center", fontSize: "11px", color: "#94a3b8", fontWeight: "600", marginTop: "15px", borderTop: "1px solid #e2e8f0", paddingTop: "10px" }}>
-                  Active Session: {String(runH).padStart(2, '0')}:{String(runM).padStart(2, '0')}:{String(runS).padStart(2, '0')}
-                </div>
-              </div>
-            )}
+              )}
+            </div>
           </div>
         </div>
 
@@ -392,9 +408,14 @@ export default function TaskTimer() {
         <div style={{ 
           position: "absolute", top: 0, left: 0, width: "100%", height: "100%",
           backfaceVisibility: "hidden", WebkitBackfaceVisibility: "hidden",
-          transform: "rotateY(180deg)", backgroundColor: "#f8fafc", borderRadius: "24px", 
-          boxShadow: "0 20px 40px rgba(0,0,0,0.15)", border: "1px solid #cbd5e1",
-          display: "flex", flexDirection: "column", overflow: "hidden"
+          transform: "rotateY(180deg)", 
+          backgroundColor: showFullUI ? "#f8fafc" : "transparent", 
+          borderRadius: "24px", 
+          boxShadow: showFullUI ? "0 20px 40px rgba(0,0,0,0.15)" : "none", 
+          border: showFullUI ? "1px solid #cbd5e1" : "1px solid transparent",
+          display: "flex", flexDirection: "column", overflow: "hidden",
+          opacity: showFullUI ? 1 : 0,
+          transition: "all 0.3s ease"
         }}>
           
           <div onMouseDown={handleMouseDown} style={{ backgroundColor: "#2d2d2d", color: "#fff", padding: "12px 16px", display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "grab" }}>

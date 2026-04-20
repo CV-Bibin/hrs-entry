@@ -13,13 +13,16 @@ export default function TaskTimer() {
   const [autoLoop, setAutoLoop] = useState(false);
   const [loopCount, setLoopCount] = useState(1);
   
+  // 🚀 NEW: Unique Session ID to group history entries
+  const [sessionId, setSessionId] = useState(Date.now());
+  
   // UI States
   const [isMinimized, setIsMinimized] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [isHovered, setIsHovered] = useState(false); 
-  const [isFlipped, setIsFlipped] = useState(false); // 🚀 NEW: Card Flip State
+  const [isFlipped, setIsFlipped] = useState(false);
   
-  // 🚀 NEW: History State (Persisted to localStorage)
+  // History State (Persisted to localStorage)
   const [history, setHistory] = useState(() => {
     const saved = localStorage.getItem('taskTimerHistory');
     return saved ? JSON.parse(saved) : [];
@@ -65,16 +68,29 @@ export default function TaskTimer() {
     }
   };
 
-  // 📝 Save to History Logic
-  const saveToHistory = (type) => {
-    const newRecord = {
-      id: Date.now(),
-      time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
-      type: type,
-      loop: loopCount,
-      target: `${String(targetMin).padStart(2, '0')}:${String(targetSec).padStart(2, '0')}`
-    };
-    setHistory(prev => [newRecord, ...prev].slice(0, 50)); // Keep last 50 entries
+  // 📝 🚀 SMART HISTORY SAVER: Groups identical loops into one session card
+  const saveToHistory = () => {
+    setHistory(prev => {
+      const currentTarget = `${String(targetMin).padStart(2, '0')}:${String(targetSec).padStart(2, '0')}`;
+      const nowTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      
+      // If the top history item belongs to the current session, update its loop count
+      if (prev.length > 0 && prev[0].sessionId === sessionId && prev[0].target === currentTarget) {
+        const updatedHistory = [...prev];
+        updatedHistory[0] = { ...updatedHistory[0], loop: loopCount, time: nowTime };
+        return updatedHistory;
+      } else {
+        // Otherwise, create a brand new session card
+        const newRecord = {
+          id: Date.now(),
+          sessionId: sessionId,
+          time: nowTime,
+          loop: loopCount,
+          target: currentTarget
+        };
+        return [newRecord, ...prev].slice(0, 50); // Keep last 50 sessions
+      }
+    });
   };
 
   // ⏱️ Master Bulletproof Timer Engine
@@ -96,7 +112,7 @@ export default function TaskTimer() {
       if (remaining <= 0) {
         playAlertSound();
         if (autoLoop) {
-          saveToHistory('Auto-Loop'); // 🚀 SAVE ON AUTO LOOP
+          saveToHistory(); 
           setLoopCount(c => c + 1);
           targetEndTime = now + targetMs + remaining; 
           remaining = targetEndTime - now;
@@ -109,7 +125,7 @@ export default function TaskTimer() {
     }, 50); 
 
     return () => clearInterval(interval);
-  }, [isRunning, autoLoop, targetMs, targetMin, targetSec, loopCount]); 
+  }, [isRunning, autoLoop, targetMs, targetMin, targetSec, loopCount, sessionId]); 
 
   // 🖱️ Draggable Window Logic
   const handleMouseDown = (e) => {
@@ -142,7 +158,7 @@ export default function TaskTimer() {
 
   // 🎛️ Controls
   const handleStart = () => {
-    if (targetMs === 0) return; // Prevent start if 0
+    if (targetMs === 0) return; 
     if (!audioCtxRef.current) audioCtxRef.current = new (window.AudioContext || window.webkitAudioContext)();
     if (timeLeftMs <= 0) setTimeLeftMs(targetMs);
     setIsRunning(true);
@@ -151,7 +167,7 @@ export default function TaskTimer() {
   const handlePause = () => setIsRunning(false);
 
   const handleManualSubmit = () => {
-    saveToHistory('Manual Submit'); // 🚀 SAVE ON MANUAL SUBMIT
+    saveToHistory(); 
     setIsRunning(false);
     setLoopCount(c => c + 1);
     setTimeLeftMs(targetMs);
@@ -163,11 +179,29 @@ export default function TaskTimer() {
     setTimeLeftMs(targetMs);
   };
 
+  // 🚀 Resets the timer AND breaks the history session
   const handleFullSessionReset = () => {
     setIsRunning(false);
     setTimeLeftMs(targetMs);
     setRunningTotalMs(0);
     setLoopCount(1);
+    setSessionId(Date.now()); // Breaks the session to start a new history block
+  };
+
+  // 🚀 Handles changing the target time and forces a session split
+  const handleTargetChange = (type, val) => {
+    let newMin = targetMin;
+    let newSec = targetSec;
+    if (type === 'min') { newMin = val; setTargetMin(val); }
+    if (type === 'sec') { newSec = val; setTargetSec(val); }
+    
+    const newTargetMs = ((Number(newMin) * 60) + Number(newSec)) * 1000;
+    
+    setIsRunning(false);
+    setTimeLeftMs(newTargetMs);
+    setRunningTotalMs(0);
+    setLoopCount(1);
+    setSessionId(Date.now()); // Break session because AET changed
   };
 
   // 📝 Formatters
@@ -232,7 +266,7 @@ export default function TaskTimer() {
         fontFamily: "'Segoe UI', Tahoma, Geneva, Verdana, sans-serif",
         opacity: isHovered ? 1 : 0.4, 
         transition: "opacity 0.3s ease",
-        perspective: "1000px" // 🚀 Enables 3D Flip
+        perspective: "1000px" 
       }}
     >
       <div style={{
@@ -334,8 +368,8 @@ export default function TaskTimer() {
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
                   <span style={{ fontSize: "13px", fontWeight: "600", color: "#475569" }}>Target (AET):</span>
                   <div style={{ display: "flex", gap: "5px", alignItems: "center" }}>
-                    <input type="number" min="0" value={targetMin} onChange={e => { setTargetMin(e.target.value); setTimeLeftMs(((Number(e.target.value) * 60) + Number(targetSec)) * 1000); }} style={{ width: "35px", padding: "4px", textAlign: "center", border: "1px solid #cbd5e1", borderRadius: "4px", fontSize: "13px" }} /> <span style={{fontWeight:"600", fontSize:"12px", color: "#64748b"}}>m</span>
-                    <input type="number" min="0" max="59" value={targetSec} onChange={e => { setTargetSec(e.target.value); setTimeLeftMs(((Number(targetMin) * 60) + Number(e.target.value)) * 1000); }} style={{ width: "35px", padding: "4px", textAlign: "center", border: "1px solid #cbd5e1", borderRadius: "4px", fontSize: "13px" }} /> <span style={{fontWeight:"600", fontSize:"12px", color: "#64748b"}}>s</span>
+                    <input type="number" min="0" value={targetMin} onChange={e => handleTargetChange('min', e.target.value)} style={{ width: "35px", padding: "4px", textAlign: "center", border: "1px solid #cbd5e1", borderRadius: "4px", fontSize: "13px" }} /> <span style={{fontWeight:"600", fontSize:"12px", color: "#64748b"}}>m</span>
+                    <input type="number" min="0" max="59" value={targetSec} onChange={e => handleTargetChange('sec', e.target.value)} style={{ width: "35px", padding: "4px", textAlign: "center", border: "1px solid #cbd5e1", borderRadius: "4px", fontSize: "13px" }} /> <span style={{fontWeight:"600", fontSize:"12px", color: "#64748b"}}>s</span>
                   </div>
                 </div>
                 
@@ -370,16 +404,16 @@ export default function TaskTimer() {
 
           <div style={{ flex: 1, overflowY: "auto", padding: "15px", display: "flex", flexDirection: "column", gap: "8px" }}>
             {history.length === 0 ? (
-              <div style={{ textAlign: "center", color: "#94a3b8", fontSize: "13px", marginTop: "40px", fontStyle: "italic" }}>No submissions yet.</div>
+              <div style={{ textAlign: "center", color: "#94a3b8", fontSize: "13px", marginTop: "40px", fontStyle: "italic" }}>No completed sessions.</div>
             ) : (
-              history.map((record, i) => (
-                <div key={record.id} style={{ backgroundColor: "#fff", padding: "10px", borderRadius: "8px", border: "1px solid #e2e8f0", fontSize: "12px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              history.map((record) => (
+                <div key={record.id} style={{ backgroundColor: "#fff", padding: "10px", borderRadius: "8px", border: "1px solid #e2e8f0", fontSize: "12px", display: "flex", justifyContent: "space-between", alignItems: "center", boxShadow: "0 2px 4px rgba(0,0,0,0.02)" }}>
                   <div>
-                    <strong style={{ color: "#475569" }}>Loop {record.loop}</strong>
-                    <div style={{ color: "#94a3b8", fontSize: "10px", marginTop: "2px" }}>{record.time} • {record.type}</div>
+                    <strong style={{ color: "#475569", fontSize: "13px" }}>Completed: {record.loop} {record.loop === 1 ? 'Loop' : 'Loops'}</strong>
+                    <div style={{ color: "#94a3b8", fontSize: "10px", marginTop: "4px" }}>Last active: {record.time}</div>
                   </div>
-                  <div style={{ fontWeight: "bold", color: "#10b981", backgroundColor: "#ecfdf5", padding: "4px 8px", borderRadius: "4px" }}>
-                    {record.target}
+                  <div style={{ fontWeight: "bold", color: "#6254a3", backgroundColor: "#f3e8ff", border: "1px solid #d8b4fe", padding: "4px 8px", borderRadius: "6px" }}>
+                    {record.target} AET
                   </div>
                 </div>
               ))
@@ -389,9 +423,9 @@ export default function TaskTimer() {
           <div style={{ padding: "15px", borderTop: "1px solid #e2e8f0", backgroundColor: "#fff" }}>
             <button 
               onClick={() => setHistory([])} 
-              style={{ width: "100%", padding: "10px", backgroundColor: "#ef4444", color: "white", border: "none", borderRadius: "6px", fontWeight: "bold", cursor: "pointer" }}
+              style={{ width: "100%", padding: "10px", backgroundColor: "#ef4444", color: "white", border: "none", borderRadius: "8px", fontWeight: "bold", cursor: "pointer", fontSize: "13px" }}
             >
-              🗑️ Clear History
+              🗑️ Clear Entire History
             </button>
           </div>
 
